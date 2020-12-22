@@ -1,0 +1,385 @@
+﻿## RでMagic:the Gatheringのゲームを再現する試み
+
+library(tidymodels)
+library(tidyverse)
+
+
+## Simple Deck
+## Deck1: 山 20: 稲妻 40
+## Deck2: 森 20: 熊 40
+
+## 配列の定義
+## 両プレイヤーのデッキ。とりあえず60枚固定。
+## Cardがカードの種類
+## Statusがカードの状態(0:ライブラリ, 1:手札, 2:場, 3:墓地, 4:除外)
+Deck <- tibble(
+	PlayerId = c(rep(1, 60), rep(2,60)),
+	Card = c(rep(0, 120)),
+	Status = c(rep(0, 120))
+)
+
+## HPとマナ
+HP <- c(20,20)
+Mana <- c(0, 0)
+
+
+## カード定義（そのうち外部ファイルにする）
+Cards <- tibble(
+	Id = c(1, 2, 101, 102),
+	Name = c("山", "森", "稲妻", "熊"),
+	Type = c("Land", "Land", "Instant", "Creature"),
+	ManaCost = c(0, 0, 1, 2),
+	Power = c(0, 0, 3, 2),
+	Toughness = c(0, 0, 0, 2)
+)
+
+## デッキを準備する
+MTG_Init <- function() {
+
+	Deck <- tibble(
+		PlayerId = c(rep(1, 60), rep(2,60)),
+		Card = c(rep(0, 120)),
+		Status = c(rep(0, 120))
+	)
+	## すべてのカードをライブラリへおく
+	Deck$Status <- 0
+	## プレイヤー１のデッキ
+	Deck$Card[1:20] <- 1
+	Deck$Card[21:60] <- 101
+	## プレイヤー２のデッキ
+	Deck$Card[61:80] <- 2
+	Deck$Card[81:120]<- 102
+
+	return(Deck)
+}
+
+## MTG_Draw関数 ライブラリーからカードを引く
+## Deck:使用中のDeck
+## Player:どちらのプレイヤーのライブラリから引くか
+## CardCount:引くカードの枚数
+MTG_Draw <- function(Deck, Player, CardCount) {
+	## 引数のエラー処理
+	if (Player < 1 & Player > 2) { return("プレイヤの指定が正しくありません") }
+	if (CardCount < 1 & CardCount > 60) { return("引くカード枚数の指定が正しくありません") }
+
+	drawCard = 0
+	while (drawCard < CardCount) {
+		## お試しロジックなので、おバカコード
+		n = as.integer(runif(1, min = 1, max = 61) )
+		if (Player == 2) { n = n + 60 }
+		if (Deck$Status[n] == 0) { 
+			Deck$Status[n] <- 1
+			drawCard = drawCard + 1
+		}
+	}
+	return(Deck)
+}
+
+##Deck <- MTG_Init()
+
+##Deck <- MTG_Draw(Deck, 1, 7)
+##Deck <- MTG_Draw(Deck, 2, 7)
+
+## 対象プレイヤーの手札を確認する。
+## Deck:使用中のDeck
+## Player:どちらのプレイヤーのハンドを確認するか
+MTG_Hand <- function(Deck, Player, flgShowCardName = FALSE) {
+	## 引数のエラー処理
+	if (Player < 1 & Player > 2) { return("プレイヤの指定が正しくありません") }
+
+	Hand <- Deck %>% filter(PlayerId == Player & Status == 1)
+	
+	if ( flgShowCardName) {
+		if (nrow(Hand) > 0 ) {
+			for(i in 1:nrow(Hand) ) {
+				CardName <- Cards %>% filter(Id == Hand$Card[i]) %>% select(Name)
+				if (i == 1) {
+					handStr = CardName
+				} else {
+					handStr <- paste( handStr, CardName, sep = ",")
+				}
+			}
+		} else {
+			handStr = "(None)"
+		}
+		return(handStr)
+	} else {
+		return(Hand$Card)
+	}
+}
+
+##MTG_Hand(Deck, 1)
+##MTG_Hand(Deck, 2)
+
+##MTG_Hand(Deck, 1, TRUE)
+##MTG_Hand(Deck, 2, TRUE)
+
+
+## 土地を置く
+## Deck:使用中のDeck
+## Player:どちらのプレイヤーの土地をおくか
+MTG_SetLand <- function(Deck, Player) {
+
+	## 対象プレイヤーのデッキを全部みて、手札に土地があったら、場に出す。
+	for(i in 1:nrow(Deck) ) {
+		CardType <- Cards %>% filter(Id == Deck$Card[i]) %>% select(Type)
+		if (Deck$PlayerId[i] == Player && Deck$Status[i] == 1 && CardType == "Land") {
+			Deck$Status[i] <- 2
+			## 関数外の値を更新するので <を２つ入れる。
+			Mana[Player] <<- Mana[Player] + 1
+			break
+		}
+	}
+	return(Deck)
+}
+
+##Deck <- MTG_SetLand(Deck, 1)
+##MTG_Hand(Deck, 1, TRUE)
+
+## スペルを使う
+## Deck:使用中のDeck
+## Player:どちらのプレイヤーがスペルを使うか
+MTG_PlaySpell <- function(Deck, Player) {
+
+	## 対象プレイヤーのデッキを全部みて、手札にInstantかCreatureがあるか？
+	for(i in 1:nrow(Deck) ) {
+		Card <- Cards %>% filter(Id == Deck$Card[i])
+		if (Deck$PlayerId[i] == Player && Deck$Status[i] == 1 && Card$Type == "Instant" && Card$ManaCost <= Mana[Player]) {
+			## Instantがあった
+			Opponent = 3 - Player
+			Deck$Status[i] <- 3
+			## 関数外の値を更新するので <を２つ入れる。
+			HP[Opponent] <<- HP[Opponent] - Card$Power
+			Mana[Player] <<- Mana[Player] - Card$ManaCost
+		} else if (Deck$PlayerId[i] == Player && Deck$Status[i] == 1 && Card$Type =="Creature" && Card$ManaCost <= Mana[Player]) {
+			## Creature呪文があった
+			Deck$Status[i] <- 2
+			## 関数外の値を更新するので <を２つ入れる。
+			Mana[Player] <<- Mana[Player] - Card$ManaCost
+		}
+	}
+	return(Deck)
+}
+
+##Deck <- MTG_PlaySpell(Deck, 1)
+##MTG_Hand(Deck, 1, TRUE)
+
+
+## アタック
+## Deck:使用中のDeck
+## Player:どちらのプレイヤーが攻撃するか
+MTG_Attack <- function(Deck, Player) {
+
+	## 対象プレイヤーのデッキを全部みて、場にCreatureがあるか？
+	for(i in 1:nrow(Deck) ) {
+		Card <- Cards %>% filter(Id == Deck$Card[i])
+		if (Deck$PlayerId[i] == Player && Deck$Status[i] == 2 && Card$Type =="Creature" && Card$ManaCost <= Mana[Player]) {
+			## 場にCreatureがあった。
+			Opponent = 3 - Player
+			## 関数外の値を更新するので <を２つ入れる。
+			HP[Opponent] <<- HP[Opponent] - Card$Power
+			
+			## 場にいるCreatureはすべて攻撃するので、ここはbreakしない
+		}
+	}
+	return(Deck)
+}
+
+## ターン開始時の処理など
+## 今は、マナを入れる処理だけ
+## Deck:使用中のDeck
+## Player:どちらのプレイヤーの開始処理か
+MTG_TurnStart <- function(Deck, Player) {
+
+	BattleField <- Deck %>% filter(PlayerId == Player & Status == 2)
+	
+	Lands = 0
+	if (nrow(BattleField) > 0) {
+		for(i in 1:nrow(BattleField) ) {
+			Card <- Cards %>% filter(Id == BattleField$Card[i])
+			if (Card$Type == "Land") {
+				Lands = Lands + 1
+			}
+		}
+	}
+	Mana[Player] <<- Lands
+
+	## 返す必要ないがお約束なので入れておく。
+	return(Deck)
+}
+
+## ターン終了時の処理など
+## 今はDiscardの処理だけ
+## Deck:使用中のDeck
+## Player:どちらのプレイヤーのターン終了時の処理か
+MTG_TurnEnd <- function(Deck, Player) {
+
+	Hand <- Deck %>% filter(PlayerId == Player & Status == 1)
+
+	CardCount <- nrow(Hand)
+	while (CardCount > 7) {
+		## お試しロジックなので、おバカコード
+		n = as.integer(runif(1, min = 1, max =61) )
+		if (Player == 2) { n = n + 60 }
+		if (Deck$Status[n] == 1) { 
+			Deck$Status[n] <- 3
+			CardCount = CardCount - 1
+		}
+	}
+
+	return(Deck)
+}
+
+## 手番プレイヤーを交代する。
+## ActivePlayer:現在の手番プレイヤー
+MTG_SwitchPlayer <- function(ActivePlayer) {
+	
+	NextPlayer <- 1
+	if (ActivePlayer == 1) {
+		NextPlayer <- 2
+	}
+	return(NextPlayer)
+}
+
+## 勝利条件の判定をする
+MTG_CheckVictory <- function() {
+
+	WinPlayer = 0
+	if (HP[1] <= 0) {
+		WinPlayer = 2
+	} else if (HP[2] <= 0 ) {
+		WinPlayer = 1
+	}
+	return (WinPlayer)
+}
+
+## Logをどうするか考える。
+## 名称はGameLog で、DataFrame
+## RandomSeed
+## 勝利プレイヤー
+## 先手プレイヤー
+## HPWin
+## HPLose
+## TurnCount
+
+## GameHistory## は同じRandomSeedを渡すことで再現できる
+
+## ゲームを進行させる。
+## RandomSeed:乱数の元（デフォルトは0で指定しない）
+## flgShowHistory:対戦経過をConsoleへ出力するか
+MentalNote <- function(RandomSeed = 0, flgShowHistory = FALSE) {
+
+	## デッキを準備する。
+	Deck <- MTG_Init()
+
+	## 乱数の元が指定されていたらセットする。（同じ展開になる）
+	if (RandomSeed != 0) {
+		set.seed(RandomSeed)
+	}
+
+	## 初期手札を決める。
+	Deck <- MTG_Draw(Deck, 1, 7)
+	Deck <- MTG_Draw(Deck, 2, 7)
+	
+	## ライフとマナの初期値を設定する。
+	HP <<- c(20,20)
+	Mana <<- c(0, 0)
+
+	## 先手プレイヤーを決める
+	TurnCount = 1
+	FirstPlayer = as.integer(runif(1, min = 1, max =3) )
+	ActivePlayer = FirstPlayer
+	
+	## 勝敗が付くまでターンを進める。
+	WinPlayer <- MTG_CheckVictory()
+	while (WinPlayer == 0) {
+		## アンタップ、アップキープ
+		Deck <<- MTG_TurnStart(Deck, ActivePlayer)
+
+		## 先手１ターン目はドローなし
+		if (TurnCount > 1) {
+			Deck <- MTG_Draw(Deck, ActivePlayer, 1)
+		}
+		## 第一メインフェイズに土地を置く
+		Deck <- MTG_SetLand(Deck, ActivePlayer)
+		
+		## 攻撃フェイズ
+		Deck <- MTG_Attack(Deck, ActivePlayer)
+
+		## 第二メインフェイズ
+		Deck <- MTG_PlaySpell(Deck, ActivePlayer)
+		
+		WinPlayer <- MTG_CheckVictory()
+
+		## 終了フェイズ
+		Deck <- MTG_TurnEnd(Deck, ActivePlayer)
+		
+		## コンソールに途中経過を出力する。
+		if (flgShowHistory == TRUE) {
+			print(TurnCount)
+			print(ActivePlayer)
+			if (ActivePlayer == 1) {
+				print(MTG_Hand(Deck, 1, TRUE))
+			} else {
+				print(MTG_Hand(Deck, 2, TRUE))
+			}
+			print(HP)
+			print(Mana)
+		}
+		
+		ActivePlayer = MTG_SwitchPlayer(ActivePlayer)
+		TurnCount = TurnCount + 1
+		
+		## 念のため無限ループを抜ける処理を追加しておく。
+		if (TurnCount > 80) break
+	}
+	
+	## ゲームを記録して終了。
+	LosePlayer = 1
+	if (WinPlayer == 1) {
+		LosePlayer = 2
+	}
+	
+	GameLog <- data.frame(
+		"RandomSeed" = RandomSeed,
+		"WinPlayer" = WinPlayer,
+		"FirstPlayer" = FirstPlayer,
+		"HPWin" = HP[WinPlayer],
+		"HPLose" = HP[LosePlayer],
+		"finalTurn" = TurnCount
+	)
+	return(GameLog)
+}
+
+##Result <- MentalNote()
+
+## 最後にｎ回シミュレートさせる関数を作る。
+## LoopCount:試行回数
+## StartSeed:乱数の元の開始番号
+AccumulateKnowledge <- function(LoopCount, StartSeed) {
+	## 引数のエラー処理
+	if (LoopCount < 1) { return("試行回数は1以上を指定してください。") }
+
+	StartTime = Sys.time()
+	print(StartTime)
+	for(i in 1:LoopCount) {
+		print(i)
+		Result <- MentalNote(StartSeed + i - 1)
+		if ( i == 1 ) {
+			TotalResult <- Result
+		} else {
+			TotalResult <- rbind(TotalResult, Result)
+		}
+	}
+	EndTime = Sys.time()
+	print(EndTime)
+	print(EndTime - StartTime)
+	
+	return(TotalResult)
+}
+
+TotalResult <- AccumulateKnowledge(1000, 1)
+
+save(TotalResult, file="c:/yanagawa/R/TotalResult.dat")
+
+load("c:/yanagawa/R/TotalResult.dat")
