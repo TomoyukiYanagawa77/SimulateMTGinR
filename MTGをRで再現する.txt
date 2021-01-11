@@ -363,22 +363,27 @@ MentalNote <- function(RandomSeed = 0, flgShowHistory = FALSE) {
 
 		## コンソールに途中経過を出力する。
 		if (flgShowHistory == TRUE) {
-			print(TurnCount)
-			print(ActivePlayer)
+			cat(TurnCount)
+			cat("ターン目\n")
 			if (ActivePlayer == 1) {
-				print(MTG_Hand(Deck, 1, TRUE))
+				cat("山デッキ:")
+				cat(MTG_Hand(Deck, 1, TRUE))
+				cat("\n")
 			} else {
-				print(MTG_Hand(Deck, 2, TRUE))
+				cat("森デッキ:")
+				cat(MTG_Hand(Deck, 2, TRUE))
+				cat("\n")
 			}
 			print(HP)
 			print(Mana)
 		}
 		
+		if (WinPlayer != 0) {
+			break
+		}
+		
 		ActivePlayer = MTG_SwitchPlayer(ActivePlayer)
 		TurnCount = TurnCount + 1
-		
-		## 念のため無限ループを抜ける処理を追加しておく。
-		if (TurnCount > 80) break
 	}
 	
 	## ゲームを記録して終了。
