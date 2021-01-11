@@ -1,4 +1,4 @@
-﻿## RでMagic:the Gatheringのゲームを再現する試み
+# RでMagic:the Gatheringのゲームを再現する試み
 
 library(tidymodels)
 library(tidyverse)
@@ -12,7 +12,9 @@ library(tidyverse)
 ## 両プレイヤーのデッキ。とりあえず60枚固定。
 ## Cardがカードの種類
 ## Statusがカードの状態(0:ライブラリ, 1:手札, 2:場, 3:墓地, 4:除外)
+## 202012.23 DeckRowを追加
 Deck <- tibble(
+	DeckRow = c(1:120),
 	PlayerId = c(rep(1, 60), rep(2,60)),
 	Card = c(rep(0, 120)),
 	Status = c(rep(0, 120))
@@ -34,9 +36,11 @@ Cards <- tibble(
 )
 
 ## デッキを準備する
+## 2020.12.23 高速化 (カードマスタのとinner_joinを１回だけにした)
 MTG_Init <- function() {
 
 	Deck <- tibble(
+		DeckRow = c(1:120),
 		PlayerId = c(rep(1, 60), rep(2,60)),
 		Card = c(rep(0, 120)),
 		Status = c(rep(0, 120))
@@ -49,6 +53,9 @@ MTG_Init <- function() {
 	## プレイヤー２のデッキ
 	Deck$Card[61:80] <- 2
 	Deck$Card[81:120]<- 102
+	
+	## カードマスタとのinner_joinはここで１回だけやればいい
+	Deck <- Deck %>% inner_join(Cards, by = c("Card" = "Id") )
 
 	return(Deck)
 }
@@ -63,6 +70,7 @@ MTG_Draw <- function(Deck, Player, CardCount) {
 	if (CardCount < 1 & CardCount > 60) { return("引くカード枚数の指定が正しくありません") }
 
 	drawCard = 0
+	## ライブラリからランダムに１枚選ぶ
 	while (drawCard < CardCount) {
 		## お試しロジックなので、おバカコード
 		n = as.integer(runif(1, min = 1, max = 61) )
@@ -92,11 +100,10 @@ MTG_Hand <- function(Deck, Player, flgShowCardName = FALSE) {
 	if ( flgShowCardName) {
 		if (nrow(Hand) > 0 ) {
 			for(i in 1:nrow(Hand) ) {
-				CardName <- Cards %>% filter(Id == Hand$Card[i]) %>% select(Name)
 				if (i == 1) {
-					handStr = CardName
+					handStr = Hand$Name[i]
 				} else {
-					handStr <- paste( handStr, CardName, sep = ",")
+					handStr <- paste( handStr, Hand$Name[i], sep = ",")
 				}
 			}
 		} else {
@@ -118,17 +125,18 @@ MTG_Hand <- function(Deck, Player, flgShowCardName = FALSE) {
 ## 土地を置く
 ## Deck:使用中のDeck
 ## Player:どちらのプレイヤーの土地をおくか
+## 2020.12.23 高速化（forループを使用しないようにした。）
 MTG_SetLand <- function(Deck, Player) {
 
-	## 対象プレイヤーのデッキを全部みて、手札に土地があったら、場に出す。
-	for(i in 1:nrow(Deck) ) {
-		CardType <- Cards %>% filter(Id == Deck$Card[i]) %>% select(Type)
-		if (Deck$PlayerId[i] == Player && Deck$Status[i] == 1 && CardType == "Land") {
-			Deck$Status[i] <- 2
-			## 関数外の値を更新するので <を２つ入れる。
-			Mana[Player] <<- Mana[Player] + 1
-			break
-		}
+	## 対象プレイヤーの手札の土地カードを取得する。
+	HandLand <- Deck %>% 
+		filter(PlayerId == Player & Status == 1 & Type == "Land")
+
+	if (nrow(HandLand) > 0 ) {
+		## 1枚だけ土地を戦場に出す
+		Deck$Status[HandLand$DeckRow[1]] <- 2
+		## 関数外の値を更新するので <を２つ入れる。
+		Mana[Player] <<- Mana[Player] + 1
 	}
 	return(Deck)
 }
@@ -139,23 +147,30 @@ MTG_SetLand <- function(Deck, Player) {
 ## スペルを使う
 ## Deck:使用中のDeck
 ## Player:どちらのプレイヤーがスペルを使うか
+## 2020.12.23 高速化（だけどここだけはforループを使わざるを得ない）
 MTG_PlaySpell <- function(Deck, Player) {
 
-	## 対象プレイヤーのデッキを全部みて、手札にInstantかCreatureがあるか？
-	for(i in 1:nrow(Deck) ) {
-		Card <- Cards %>% filter(Id == Deck$Card[i])
-		if (Deck$PlayerId[i] == Player && Deck$Status[i] == 1 && Card$Type == "Instant" && Card$ManaCost <= Mana[Player]) {
-			## Instantがあった
-			Opponent = 3 - Player
-			Deck$Status[i] <- 3
-			## 関数外の値を更新するので <を２つ入れる。
-			HP[Opponent] <<- HP[Opponent] - Card$Power
-			Mana[Player] <<- Mana[Player] - Card$ManaCost
-		} else if (Deck$PlayerId[i] == Player && Deck$Status[i] == 1 && Card$Type =="Creature" && Card$ManaCost <= Mana[Player]) {
-			## Creature呪文があった
-			Deck$Status[i] <- 2
-			## 関数外の値を更新するので <を２つ入れる。
-			Mana[Player] <<- Mana[Player] - Card$ManaCost
+	## 対象プレイヤーの手札にInstantかCreatureがあるか？
+	Hand <- Deck %>% 
+		filter(PlayerId == Player & Status == 1 & (Type == "Instant" | Type == "Creature") )
+
+	if (nrow(Hand) > 0 ) {
+		for(i in 1:nrow(Hand) ) {
+			if ( Hand$ManaCost[i] <= Mana[Player] ) {
+				if (Hand$Type[i] == "Instant") {
+					## Instantがあった
+					Opponent = 3 - Player
+					Deck$Status[Hand$DeckRow[i]] <- 3
+					## 関数外の値を更新するので <を２つ入れる。
+					HP[Opponent] <<- HP[Opponent] - Hand$Power[i]
+					Mana[Player] <<- Mana[Player] - Hand$ManaCost[i]
+				} else if (Hand$Type[i] == "Creature") {
+					## Creature呪文があった
+					Deck$Status[Hand$DeckRow[i]] <- 2
+					## 関数外の値を更新するので <を２つ入れる。
+					Mana[Player] <<- Mana[Player] - Hand$ManaCost[i]
+				}
+			}
 		}
 	}
 	return(Deck)
@@ -168,20 +183,20 @@ MTG_PlaySpell <- function(Deck, Player) {
 ## アタック
 ## Deck:使用中のDeck
 ## Player:どちらのプレイヤーが攻撃するか
+## 2020.12.23 高速化（forループを使用しないようにした。）
 MTG_Attack <- function(Deck, Player) {
 
-	## 対象プレイヤーのデッキを全部みて、場にCreatureがあるか？
-	for(i in 1:nrow(Deck) ) {
-		Card <- Cards %>% filter(Id == Deck$Card[i])
-		if (Deck$PlayerId[i] == Player && Deck$Status[i] == 2 && Card$Type =="Creature" && Card$ManaCost <= Mana[Player]) {
-			## 場にCreatureがあった。
-			Opponent = 3 - Player
-			## 関数外の値を更新するので <を２つ入れる。
-			HP[Opponent] <<- HP[Opponent] - Card$Power
-			
-			## 場にいるCreatureはすべて攻撃するので、ここはbreakしない
-		}
+	## 対象プレイヤーの戦場にある生物カードと取得する。
+	BattleFieldCreature <- Deck %>% 
+		filter(PlayerId == Player & Status == 2 & Type == "Creature")
+	
+	if (nrow(BattleFieldCreature) > 0) {
+		## 場にいるCreatureのパワー分だけ相手プレイヤーのHPを減らす
+		Opponent = 3 - Player
+		## 関数外の値を更新するので <を２つ入れる。
+		HP[Opponent] <<- HP[Opponent] - sum(BattleFieldCreature$Power)
 	}
+
 	return(Deck)
 }
 
@@ -191,18 +206,9 @@ MTG_Attack <- function(Deck, Player) {
 ## Player:どちらのプレイヤーの開始処理か
 MTG_TurnStart <- function(Deck, Player) {
 
-	BattleField <- Deck %>% filter(PlayerId == Player & Status == 2)
+	BattleFieldLand <- Deck %>% filter(PlayerId == Player & Status == 2 & Type == "Land")
 	
-	Lands = 0
-	if (nrow(BattleField) > 0) {
-		for(i in 1:nrow(BattleField) ) {
-			Card <- Cards %>% filter(Id == BattleField$Card[i])
-			if (Card$Type == "Land") {
-				Lands = Lands + 1
-			}
-		}
-	}
-	Mana[Player] <<- Lands
+	Mana[Player] <<- nrow(BattleFieldLand)
 
 	## 返す必要ないがお約束なので入れておく。
 	return(Deck)
@@ -264,18 +270,39 @@ MTG_CheckVictory <- function() {
 
 ## GameHistory## は同じRandomSeedを渡すことで再現できる
 
+
+
+## 高速化
+
+## まずは、どの処理にどれだけ時間が掛かっているか分らないと高速化しようがないので、時間を計ります。
+## なんか思っていたようなPackageがなかったので、これも自作します。（tictocは、よさげでした）
+TimeVault <- as_tibble( data.frame(processName=character(), Time= as.Date(character()) ) )
+Teferi <- function(ProcessName) {
+	if (ProcessName == "Init") {
+		TimeVault <<- as_tibble( data.frame(processName=character(), Time= as.Date(character()) ) )
+	}
+	TimeVault <<- rbind(TimeVault, data.frame(ProcessName, Time = Sys.time()) )
+}
+
 ## ゲームを進行させる。
 ## RandomSeed:乱数の元（デフォルトは0で指定しない）
 ## flgShowHistory:対戦経過をConsoleへ出力するか
+## 2020.12.22 処理時間を計る処理を追加
 MentalNote <- function(RandomSeed = 0, flgShowHistory = FALSE) {
+
+##Teferi("Init")
 
 	## デッキを準備する。
 	Deck <- MTG_Init()
+
+##Teferi("SetRandomSeed")
 
 	## 乱数の元が指定されていたらセットする。（同じ展開になる）
 	if (RandomSeed != 0) {
 		set.seed(RandomSeed)
 	}
+
+##Teferi("DrawInitialHand")
 
 	## 初期手札を決める。
 	Deck <- MTG_Draw(Deck, 1, 7)
@@ -285,6 +312,8 @@ MentalNote <- function(RandomSeed = 0, flgShowHistory = FALSE) {
 	HP <<- c(20,20)
 	Mana <<- c(0, 0)
 
+##Teferi("DecideFirstPlayer")
+
 	## 先手プレイヤーを決める
 	TurnCount = 1
 	FirstPlayer = as.integer(runif(1, min = 1, max =3) )
@@ -293,27 +322,45 @@ MentalNote <- function(RandomSeed = 0, flgShowHistory = FALSE) {
 	## 勝敗が付くまでターンを進める。
 	WinPlayer <- MTG_CheckVictory()
 	while (WinPlayer == 0) {
+
+##Teferi("TurnStart")
+
 		## アンタップ、アップキープ
 		Deck <<- MTG_TurnStart(Deck, ActivePlayer)
+
+##Teferi("TurnDraw")
 
 		## 先手１ターン目はドローなし
 		if (TurnCount > 1) {
 			Deck <- MTG_Draw(Deck, ActivePlayer, 1)
 		}
+
+##Teferi("TurnSetLand")
+
 		## 第一メインフェイズに土地を置く
 		Deck <- MTG_SetLand(Deck, ActivePlayer)
 		
+##Teferi("TurnAttack")
+
 		## 攻撃フェイズ
 		Deck <- MTG_Attack(Deck, ActivePlayer)
+
+##Teferi("TurnPlaySpell")
 
 		## 第二メインフェイズ
 		Deck <- MTG_PlaySpell(Deck, ActivePlayer)
 		
+##Teferi("TurnCheckVictory")
+
 		WinPlayer <- MTG_CheckVictory()
+
+##Teferi("TurnEnd")
 
 		## 終了フェイズ
 		Deck <- MTG_TurnEnd(Deck, ActivePlayer)
 		
+##Teferi("TurnShowHistory")
+
 		## コンソールに途中経過を出力する。
 		if (flgShowHistory == TRUE) {
 			print(TurnCount)
@@ -380,6 +427,27 @@ AccumulateKnowledge <- function(LoopCount, StartSeed) {
 
 TotalResult <- AccumulateKnowledge(1000, 1)
 
-save(TotalResult, file="c:/yanagawa/R/TotalResult.dat")
+##save(TotalResult, file="c:/yanagawa/R/TotalResult.dat")
 
-load("c:/yanagawa/R/TotalResult.dat")
+##load("c:/yanagawa/R/TotalResult.dat")
+
+
+## 処理時間を調べてみる
+
+##MentalNote(7, TRUE)
+##MentalNote(7)
+
+
+## 5秒かかってるみたい
+## 何処を高速化するのが一番効果があるか確認する。
+
+TimeVault <- TimeVault %>%
+	mutate(processTime = lubridate::time_length(lubridate::interval(Time, lead(Time),) ) )
+
+TimeVault %>% arrange(desc(processTime) )
+
+
+## TurnAttackとTurnPlaySpellが遅い
+## forループを使っている為なので、それはやめた。
+## MTG_Init内でDeckとCardsを一回だけinner_joinするように変更した。
+
