@@ -1,4 +1,4 @@
-# RでMagic:the Gatheringのゲームを再現する試み
+## RでMagic:the Gatheringのゲームを再現する試み
 
 library(tidymodels)
 library(tidyverse)
@@ -35,8 +35,13 @@ Cards <- tibble(
 	Toughness = c(0, 0, 0, 2)
 )
 
+## ライブラリの上と下の位置が分っているカードを保持する。
+DeckOnTop <- list(list(), list())
+DeckOnBottom <- list(list(), list())
+
 ## デッキを準備する
 ## 2020.12.23 高速化 (カードマスタのとinner_joinを１回だけにした)
+## 2020.12.23 DeckOnTopとDeckOnBottomの初期化を追加。
 MTG_Init <- function() {
 
 	Deck <- tibble(
@@ -57,6 +62,10 @@ MTG_Init <- function() {
 	## カードマスタとのinner_joinはここで１回だけやればいい
 	Deck <- Deck %>% inner_join(Cards, by = c("Card" = "Id") )
 
+	## ライブラリの上と下の位置が分っているカードのリストを空にする。
+	DeckOnTop <<- list(list(), list())
+	DeckOnBottom <<- list(list(), list())
+
 	return(Deck)
 }
 
@@ -64,29 +73,37 @@ MTG_Init <- function() {
 ## Deck:使用中のDeck
 ## Player:どちらのプレイヤーのライブラリから引くか
 ## CardCount:引くカードの枚数
+## 2020.12.25 ライブラリの上から引く処理とライブラリの底のカードを引かない処理を追加
 MTG_Draw <- function(Deck, Player, CardCount) {
 	## 引数のエラー処理
 	if (Player < 1 & Player > 2) { return("プレイヤの指定が正しくありません") }
 	if (CardCount < 1 & CardCount > 60) { return("引くカード枚数の指定が正しくありません") }
 
 	drawCard = 0
+	## DeckOnTopにカードがあったらそこから引く
+	tempList <- DeckOnTop[[Player]]
+	if (length(tempList) > 0) {
+		while (drawCard < CardCount && length(tempList) > 0) {
+			tempRow = tempList[ length(tempList) ]
+			Deck$Status[tempRow] <- 1
+			tempList[ length(tempList) ] <- NULL
+			drawCard <- drawCard + 1
+		}
+		DeckOnTop[[Player]] <<- tempList
+	}
+	
 	## ライブラリからランダムに１枚選ぶ
 	while (drawCard < CardCount) {
 		## お試しロジックなので、おバカコード
 		n = as.integer(runif(1, min = 1, max = 61) )
 		if (Player == 2) { n = n + 60 }
-		if (Deck$Status[n] == 0) { 
+		if (Deck$Status[n] == 0 & MTG_CheckCardLibraryBottom(Player, n) == 0) { 
 			Deck$Status[n] <- 1
 			drawCard = drawCard + 1
 		}
 	}
 	return(Deck)
 }
-
-##Deck <- MTG_Init()
-
-##Deck <- MTG_Draw(Deck, 1, 7)
-##Deck <- MTG_Draw(Deck, 2, 7)
 
 ## 対象プレイヤーの手札を確認する。
 ## Deck:使用中のDeck
@@ -115,13 +132,6 @@ MTG_Hand <- function(Deck, Player, flgShowCardName = FALSE) {
 	}
 }
 
-##MTG_Hand(Deck, 1)
-##MTG_Hand(Deck, 2)
-
-##MTG_Hand(Deck, 1, TRUE)
-##MTG_Hand(Deck, 2, TRUE)
-
-
 ## 土地を置く
 ## Deck:使用中のDeck
 ## Player:どちらのプレイヤーの土地をおくか
@@ -140,9 +150,6 @@ MTG_SetLand <- function(Deck, Player) {
 	}
 	return(Deck)
 }
-
-##Deck <- MTG_SetLand(Deck, 1)
-##MTG_Hand(Deck, 1, TRUE)
 
 ## スペルを使う
 ## Deck:使用中のDeck
@@ -175,9 +182,6 @@ MTG_PlaySpell <- function(Deck, Player) {
 	}
 	return(Deck)
 }
-
-##Deck <- MTG_PlaySpell(Deck, 1)
-##MTG_Hand(Deck, 1, TRUE)
 
 
 ## アタック
@@ -259,20 +263,9 @@ MTG_CheckVictory <- function() {
 	return (WinPlayer)
 }
 
-## Logをどうするか考える。
-## 名称はGameLog で、DataFrame
-## RandomSeed
-## 勝利プレイヤー
-## 先手プレイヤー
-## HPWin
-## HPLose
-## TurnCount
-
-## GameHistory## は同じRandomSeedを渡すことで再現できる
 
 
-
-## 高速化
+## 高速化の時間測定用
 
 ## まずは、どの処理にどれだけ時間が掛かっているか分らないと高速化しようがないので、時間を計ります。
 ## なんか思っていたようなPackageがなかったので、これも自作します。（tictocは、よさげでした）
@@ -284,11 +277,24 @@ Teferi <- function(ProcessName) {
 	TimeVault <<- rbind(TimeVault, data.frame(ProcessName, Time = Sys.time()) )
 }
 
+
+## Logをどうするか考える。
+## 名称はGameLog で、DataFrame
+## RandomSeed
+## 勝利プレイヤー
+## 先手プレイヤー
+## HPWin
+## HPLose
+## TurnCount
+
+## GameHistory## は同じRandomSeedを渡すことで再現できる
+
 ## ゲームを進行させる。
 ## RandomSeed:乱数の元（デフォルトは0で指定しない）
 ## flgShowHistory:対戦経過をConsoleへ出力するか
 ## 2020.12.22 処理時間を計る処理を追加
-MentalNote <- function(RandomSeed = 0, flgShowHistory = FALSE) {
+## 2020.12.25 マリガンをする／しないを追加
+MentalNote <- function(RandomSeed = 0, flgShowHistory = FALSE, flgDoMulligan = TRUE) {
 
 ##Teferi("Init")
 
@@ -318,6 +324,13 @@ MentalNote <- function(RandomSeed = 0, flgShowHistory = FALSE) {
 	TurnCount = 1
 	FirstPlayer = as.integer(runif(1, min = 1, max =3) )
 	ActivePlayer = FirstPlayer
+	
+	if (flgDoMulligan == TRUE) {
+		## 先手側マリガン処理
+		Deck <- MTG_Mulligan(Deck, ActivePlayer, FirstPlayer, flgShowHistory)
+		## 後手側マリガン処理
+		Deck <- MTG_Mulligan(Deck, 3-ActivePlayer, FirstPlayer, flgShowHistory)
+	}		
 	
 	## 勝敗が付くまでターンを進める。
 	WinPlayer <- MTG_CheckVictory()
@@ -408,7 +421,7 @@ MentalNote <- function(RandomSeed = 0, flgShowHistory = FALSE) {
 ## 最後にｎ回シミュレートさせる関数を作る。
 ## LoopCount:試行回数
 ## StartSeed:乱数の元の開始番号
-AccumulateKnowledge <- function(LoopCount, StartSeed) {
+AccumulateKnowledge <- function(LoopCount, StartSeed, flgDoMulligan = TRUE) {
 	## 引数のエラー処理
 	if (LoopCount < 1) { return("試行回数は1以上を指定してください。") }
 
@@ -416,7 +429,7 @@ AccumulateKnowledge <- function(LoopCount, StartSeed) {
 	print(StartTime)
 	for(i in 1:LoopCount) {
 		print(i)
-		Result <- MentalNote(StartSeed + i - 1)
+		Result <- MentalNote(StartSeed + i - 1, FALSE, flgDoMulligan)
 		if ( i == 1 ) {
 			TotalResult <- Result
 		} else {
@@ -430,17 +443,259 @@ AccumulateKnowledge <- function(LoopCount, StartSeed) {
 	return(TotalResult)
 }
 
+
+
+## ロンドンマリガンで、毎回7枚引いて、マリガン回数分のカードを山札の最後に戻す。
+
+## さて、ここで山札の底のカードや上のカードの処理を先に作ります。
+## 当然ドローの処理も変更になるので、あわせて修正します。
+
+## 実装方法はいくつか考えられますが、MTGではあまり、ライブラリの順番が分っていることは少ないので、いつものようにリストで表現します。
+## DeckOnTopとDeckOnBottomがそれぞれ、ライブラリの上のカードと底のカードを表していて、このリストがNULLのときは、分っているときはない状態です。
+## 上からどんどんカードを置いていって、ドローするときには上のカードを引くのでLILO（Last in Last out)です。
+##DeckOnTop <- list(list(), list())
+##DeckOnBottom <- list(list(), list())
+
+## 指定したDeckRowのカードがLibraryTopにあるか確認する。
+## flgIsRemoveCard:指定したDeckRowのカードをLibraryTopから削除する。
+## 戻り値:指定したカードがあるならDeckRowが、ないなら0を返す。
+MTG_CheckCardLibraryTop <- function(Player, DeckRow, flgIsRemoveCard = FALSE) {
+	## 引数のエラー処理
+	if (Player < 1 & Player > 2) { return("プレイヤの指定が正しくありません") }
+	if (Player == 1 & ( DeckRow < 1 | DeckRow > 60) ) { return("カードの指定が正しくありません") }
+	if (Player == 2 & ( DeckRow < 60 | DeckRow > 120) ) { return("カードの指定が正しくありません") }
+	
+	tempRow <- list()
+	tempList <- DeckOnTop[[Player]]
+	if (length(tempList) > 0) {
+		tempRow <- tempList[tempList == DeckRow]
+		if (length(tempRow) > 0 ) {
+			if (tempRow == DeckRow & flgIsRemoveCard) {
+				tempList[tempList == DeckRow] <- NULL
+				DeckOnTop[[Player]] <<- tempList
+			}
+		}
+	}
+	if (length(tempRow) == 0) {
+		return( 0 )
+	} else {
+		return( DeckRow )
+	}
+}
+
+## 指定したDeckRowのカードがLibraryBottomにあるか確認する。
+## flgIsRemoveCard:指定したDeckRowのカードをLibraryBottomから削除する。
+## 戻り値:指定したカードがあるならDeckRowが、ないなら0を返す。
+MTG_CheckCardLibraryBottom <- function(Player, DeckRow, flgIsRemoveCard = FALSE) {
+	## 引数のエラー処理
+	if (Player < 1 & Player > 2) { return("プレイヤの指定が正しくありません") }
+	if (Player == 1 & ( DeckRow < 1 | DeckRow > 60) ) { return("カードの指定が正しくありません") }
+	if (Player == 2 & ( DeckRow < 60 | DeckRow > 120) ) { return("カードの指定が正しくありません") }
+	
+	tempRow <- list()
+	tempList <- DeckOnBottom[[Player]]
+	if (length(tempList) > 0) {
+		tempRow <- tempList[tempList == DeckRow]
+		if (length(tempRow) > 0 ) {
+			if (tempRow == DeckRow & flgIsRemoveCard) {
+				tempList[tempList == DeckRow] <- NULL
+				DeckOnBottom[[Player]] <<- tempList
+			}
+		}
+	}
+	if (length(tempRow) == 0) {
+		return( 0 )
+	} else {
+		return( DeckRow )
+	}
+}
+
+## DeckRowのカードをライブラリの上に乗せる。
+MTG_SetCardLibraryTop <- function(Deck, Player, DeckRow) {
+	## 引数のエラー処理
+	if (Player < 1 & Player > 2) { return("プレイヤの指定が正しくありません") }
+	if (Player == 1 & ( DeckRow < 1 | DeckRow > 60) ) { return("カードの指定が正しくありません") }
+	if (Player == 2 & ( DeckRow < 60 | DeckRow > 120) ) { return("カードの指定が正しくありません") }
+	
+	## 指定されたカードが既にライブラリの上や底にあったら削除する。
+	tempRow <- MTG_CheckCardLibraryTop(Player, DeckRow, TRUE)
+	tempRow <- MTG_CheckCardLibraryBottom(Player, DeckRow, TRUE)
+	
+	tempList <- DeckOnTop[[Player]]
+	if (length(tempList) > 0) {
+		tempList[length(tempList)+1] <- DeckRow
+	} else {
+		tempList[1] <- DeckRow
+	}
+	DeckOnTop[[Player]] <<- tempList
+	Deck$Status[DeckRow] <- 0
+	
+	return(Deck)
+}
+
+## DeckRowのカードをライブラリの底に入れる。。
+MTG_SetCardLibraryBottom <- function(Deck, Player, DeckRow) {
+	## 引数のエラー処理
+	if (Player < 1 & Player > 2) { return("プレイヤの指定が正しくありません") }
+	if (Player == 1 & ( DeckRow < 1 | DeckRow > 60) ) { return("カードの指定が正しくありません") }
+	if (Player == 2 & ( DeckRow < 60 | DeckRow > 120) ) { return("カードの指定が正しくありません") }
+	
+	## 指定されたカードが既にライブラリの上や底にあったら削除する。
+	tempRow <- MTG_CheckCardLibraryTop(Player, DeckRow, TRUE)
+	tempRow <- MTG_CheckCardLibraryBottom(Player, DeckRow, TRUE)
+	
+	tempList <- DeckOnBottom[[Player]]
+	if (length(tempList) > 0) {
+		tempList[length(tempList)+1] <- DeckRow
+	} else {
+		tempList[1] <- DeckRow
+	}
+	DeckOnBottom[[Player]] <<- tempList
+	Deck$Status[DeckRow] <- 0
+	
+	return(Deck)
+}
+
+
+## マリガン処理（ロンドンマリガン、7枚引いてマリガン回数分のカードをライブラリの底に置く）
+## マリガン判定のルール（私が、勝手に決めた）
+## 手札が4枚になるまではマリガンする。
+## 土地が1枚もないか、土地が4枚以上ならマリガン
+## 土地1枚は、先行なら手札が7枚の時はマリガン、後攻ならマリガンしない。
+
+## Player:どちらのプレイヤーのマリガンの処理か
+## FirstPlayer:最初にプレイするプレイヤー
+## flgShowHistory:対戦経過をConsoleへ出力するか
+MTG_Mulligan <- function(Deck, Player, FirstPlayer, flgShowHistory) {
+	## 引数のエラー処理
+	if (Player < 1 & Player > 2) { return("プレイヤの指定が正しくありません") }
+	if (FirstPlayer < 1 & FirstPlayer > 2) { return("先手プレイヤの指定が正しくありません") }
+
+	MulliganCount <- 0
+	while (MulliganCount < 3) {
+		LandCards <- Deck %>% filter(PlayerId == Player & Status == 1 & Type == "Land")
+	
+		if (nrow(LandCards) > 1 & nrow(LandCards) < 5) {
+			## 土地が2枚から4枚はマリガンしない
+			break
+		} else if (nrow(LandCards) == 1) {
+			## 土地1枚は、後手か、先手の手札6枚以下ならマリガンしない
+			if (Player != FirstPlayer | MulliganCount > 0) {
+				break
+			}
+		}
+		## ここまで来たら、マリガンします。マリガン前の手札を表示しておく
+		if (flgShowHistory == TRUE) {
+			cat("Mulligan ")
+			print(MulliganCount)
+			print(MTG_Hand(Deck, Player, TRUE) )
+		}
+		## 手札のカードをライブラリに戻す。
+		Deck$Status[Deck$PlayerId == Player] <- 0
+		#Hand <- Deck %>% filter(PlayerId == Player & Status == 1)
+		#Deck$Status[Deck$DeckRow %in% Hand$DeckRow] <- 0
+
+		## 新しい手札を引く
+		Deck <- MTG_Draw(Deck, Player, 7)
+		
+		MulliganCount <- MulliganCount + 1
+	}
+	
+	if (MulliganCount > 0) {
+		## 1回以上マリガンしたら、手札をマリガン回数枚ライブラリの底に置く
+		while( MulliganCount > 0 ) {
+			## 土地が3枚以上なら土地を置く
+			LandCards <- Deck %>% filter(PlayerId == Player & Status == 1 & Type == "Land")
+			if (nrow(LandCards) > 2) {
+				tempRow <- LandCards$DeckRow[1]
+			} else {
+				NotLandCards <- Deck %>% filter(PlayerId == Player & Status == 1 & Type != "Land")
+				tempRow <- NotLandCards$DeckRow[1]
+			}
+			Deck <- MTG_SetCardLibraryBottom(Deck, Player, tempRow)
+		
+			MulliganCount <- MulliganCount - 1
+		}
+		## マリガン後の手札を表示しておく
+		if (flgShowHistory == TRUE) {
+			print("After Mulligan")
+			print(MTG_Hand(Deck, Player, TRUE) )
+		}
+		
+	}
+
+	return(Deck)
+}
+
+
+
+## ここから先がテスト用もしくは、説明用のコード
+
+
+## Deck Init & Draw Test
+Deck <- MTG_Init()
+
+Deck <- MTG_Draw(Deck, 1, 7)
+Deck <- MTG_Draw(Deck, 2, 7)
+
+
+## Hand Test
+MTG_Hand(Deck, 1)
+MTG_Hand(Deck, 2)
+
+MTG_Hand(Deck, 1, TRUE)
+MTG_Hand(Deck, 2, TRUE)
+
+
+## SetLand Test
+Deck <- MTG_SetLand(Deck, 1)
+MTG_Hand(Deck, 1, TRUE)
+
+## PlaySpell Test
+Deck <- MTG_PlaySpell(Deck, 1)
+MTG_Hand(Deck, 1, TRUE)
+
+
+## AccumulateKnowledge Test
+
 TotalResult <- AccumulateKnowledge(1000, 1)
 
-##save(TotalResult, file="c:/yanagawa/R/TotalResult.dat")
+save(TotalResult, file="c:/yanagawa/R/TotalResult.dat")
 
-##load("c:/yanagawa/R/TotalResult.dat")
+load("c:/yanagawa/R/TotalResult.dat")
+
+
+## 結果を確認してみる。
+table(TotalResult$WinPlayer)
+
+  1   2 
+832 168 
+
+table(TotalResult$WinPlayer, TotalResult$FirstPlayer)
+
+      1   2
+  1 417 415
+  2  92  76
+
+table(TotalResult$finalTurn)
+
+SummaryResult <- TotalResult %>%
+	group_by(finalTurn, WinPlayer) %>%
+	summarize(n = n())
+
+## グラフで表示
+ggplot(data = SummaryResult) +
+	geom_col(aes(x=finalTurn, y = n, fill = WinPlayer))
+
+## グラフを保存
+ggsave("c:/Yanagawa/R/pic/finalTurn.png", width = 30, height = 20, unit = "cm", dpi = 300)
+
 
 
 ## 処理時間を調べてみる
 
-##MentalNote(7, TRUE)
-##MentalNote(7)
+MentalNote(7, TRUE)
+MentalNote(7)
 
 
 ## 5秒かかってるみたい
@@ -456,3 +711,37 @@ TimeVault %>% arrange(desc(processTime) )
 ## forループを使っている為なので、それはやめた。
 ## MTG_Init内でDeckとCardsを一回だけinner_joinするように変更した。
 
+
+
+## マリガン(意外と勝敗に関係なかった。あと、乱数固定してあるからマリガン処理入れてもおそらく同じ結果になる。)
+TotalResult %>% filter(WinPlayer == 2)
+
+MentalNote(603, TRUE)
+
+
+
+
+## SetCardLibraryTop Test
+## テスト用コード
+Deck <- MTG_Init()
+Deck <- MTG_Draw(Deck, 1, 7)
+MTG_Hand(Deck, 1, TRUE)
+
+Deck %>% filter(Status == 1)
+
+Deck <- MTG_SetCardLibraryTop(Deck, 1, 31)
+MTG_Hand(Deck, 1, TRUE)
+
+DeckOnTop
+
+
+## Mulligan Test
+set.seed(603)
+Deck <- MTG_Init()
+Deck <- MTG_Draw(Deck, 1, 7)
+MTG_Hand(Deck, 1, TRUE)
+
+Deck <- MTG_Mulligan(Deck, 1, 1, TRUE)
+
+Result <- MentalNote(603, TRUE, TRUE)
+Result <- MentalNote(603, TRUE, FALSE)
