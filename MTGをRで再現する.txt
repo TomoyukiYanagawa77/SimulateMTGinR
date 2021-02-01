@@ -4,6 +4,10 @@ library(tidymodels)
 library(tidyverse)
 
 
+## 定数定義
+c_DECK_CARD_COUNT <- 60 ## 各デッキの枚数
+
+
 ## Simple Deck
 ## Deck1: 山 20: 稲妻 40
 ## Deck2: 森 20: 熊 40
@@ -14,10 +18,10 @@ library(tidyverse)
 ## Statusがカードの状態(0:ライブラリ, 1:手札, 2:場, 3:墓地, 4:除外)
 ## 202012.23 DeckRowを追加
 Deck <- tibble(
-	DeckRow = c(1:120),
-	PlayerId = c(rep(1, 60), rep(2,60)),
-	Card = c(rep(0, 120)),
-	Status = c(rep(0, 120))
+	DeckRow = c(1:(c_DECK_CARD_COUNT * 2)),
+	PlayerId = c(rep(1, c_DECK_CARD_COUNT), rep(2, c_DECK_CARD_COUNT)),
+	Card = c(rep(0, (c_DECK_CARD_COUNT * 2))),
+	Status = c(rep(0, (c_DECK_CARD_COUNT * 2)))
 )
 
 ## HPとマナ
@@ -42,22 +46,20 @@ DeckOnBottom <- list(list(), list())
 ## デッキを準備する
 ## 2020.12.23 高速化 (カードマスタのとinner_joinを１回だけにした)
 ## 2020.12.23 DeckOnTopとDeckOnBottomの初期化を追加。
+## 2021.01.25 デッキ枚数を可変にした。
 MTG_Init <- function() {
 
 	Deck <- tibble(
-		DeckRow = c(1:120),
-		PlayerId = c(rep(1, 60), rep(2,60)),
-		Card = c(rep(0, 120)),
-		Status = c(rep(0, 120))
+		DeckRow = c(1:(c_DECK_CARD_COUNT * 2)),
+		PlayerId = c(rep(1, c_DECK_CARD_COUNT), rep(2, c_DECK_CARD_COUNT)),
+		Card = c(rep(0, (c_DECK_CARD_COUNT * 2))),
+		Status = c(rep(0, (c_DECK_CARD_COUNT * 2)))
 	)
 	## すべてのカードをライブラリへおく
 	Deck$Status <- 0
-	## プレイヤー１のデッキ
-	Deck$Card[1:20] <- 1
-	Deck$Card[21:60] <- 101
-	## プレイヤー２のデッキ
-	Deck$Card[61:80] <- 2
-	Deck$Card[81:120]<- 102
+	
+	## 各プレイヤーのデッキを設定する。
+	Deck <- MTG_SetDeck(Deck)
 	
 	## カードマスタとのinner_joinはここで１回だけやればいい
 	Deck <- Deck %>% inner_join(Cards, by = c("Card" = "Id") )
@@ -69,15 +71,29 @@ MTG_Init <- function() {
 	return(Deck)
 }
 
+## 各プレイヤーのデッキをデッキに入れる
+MTG_SetDeck <- function(Deck) {
+
+	## プレイヤー１のデッキ
+	Deck$Card[1:20] <- 1
+	Deck$Card[21:60] <- 101
+	## プレイヤー２のデッキ
+	Deck$Card[61:80] <- 2
+	Deck$Card[81:120]<- 102
+	
+	return(Deck)
+}
+
 ## MTG_Draw関数 ライブラリーからカードを引く
 ## Deck:使用中のDeck
 ## Player:どちらのプレイヤーのライブラリから引くか
 ## CardCount:引くカードの枚数
 ## 2020.12.25 ライブラリの上から引く処理とライブラリの底のカードを引かない処理を追加
+## 2021.01.25 デッキ枚数を可変にした。
 MTG_Draw <- function(Deck, Player, CardCount) {
 	## 引数のエラー処理
-	if (Player < 1 & Player > 2) { return("プレイヤの指定が正しくありません") }
-	if (CardCount < 1 & CardCount > 60) { return("引くカード枚数の指定が正しくありません") }
+	if (Player < 1 & Player > 2) { stop("プレイヤの指定が正しくありません") }
+	if (CardCount < 1 & CardCount > c_DECK_CARD_COUNT) { stop("引くカード枚数の指定が正しくありません") }
 
 	drawCard = 0
 	## DeckOnTopにカードがあったらそこから引く
@@ -95,8 +111,8 @@ MTG_Draw <- function(Deck, Player, CardCount) {
 	## ライブラリからランダムに１枚選ぶ
 	while (drawCard < CardCount) {
 		## お試しロジックなので、おバカコード
-		n = as.integer(runif(1, min = 1, max = 61) )
-		if (Player == 2) { n = n + 60 }
+		n = as.integer(runif(1, min = 1, max = (c_DECK_CARD_COUNT + 1)) )
+		if (Player == 2) { n = n + c_DECK_CARD_COUNT }
 		if (Deck$Status[n] == 0 & MTG_CheckCardLibraryBottom(Player, n) == 0) { 
 			Deck$Status[n] <- 1
 			drawCard = drawCard + 1
@@ -110,7 +126,7 @@ MTG_Draw <- function(Deck, Player, CardCount) {
 ## Player:どちらのプレイヤーのハンドを確認するか
 MTG_Hand <- function(Deck, Player, flgShowCardName = FALSE) {
 	## 引数のエラー処理
-	if (Player < 1 & Player > 2) { return("プレイヤの指定が正しくありません") }
+	if (Player < 1 & Player > 2) { stop("プレイヤの指定が正しくありません") }
 
 	Hand <- Deck %>% filter(PlayerId == Player & Status == 1)
 	
@@ -222,19 +238,16 @@ MTG_TurnStart <- function(Deck, Player) {
 ## 今はDiscardの処理だけ
 ## Deck:使用中のDeck
 ## Player:どちらのプレイヤーのターン終了時の処理か
+## 2021.01.26 高速化ロジックで統一
 MTG_TurnEnd <- function(Deck, Player) {
 
 	Hand <- Deck %>% filter(PlayerId == Player & Status == 1)
 
 	CardCount <- nrow(Hand)
 	while (CardCount > 7) {
-		## お試しロジックなので、おバカコード
-		n = as.integer(runif(1, min = 1, max =61) )
-		if (Player == 2) { n = n + 60 }
-		if (Deck$Status[n] == 1) { 
-			Deck$Status[n] <- 3
-			CardCount = CardCount - 1
-		}
+		n = as.integer(runif(1, min = 1, max = CardCount + 1) )
+		Deck$Status[Hand$DeckRow[n]] <- 3
+		CardCount = CardCount - 1
 	}
 
 	return(Deck)
@@ -421,15 +434,20 @@ MentalNote <- function(RandomSeed = 0, flgShowHistory = FALSE, flgDoMulligan = T
 ## 最後にｎ回シミュレートさせる関数を作る。
 ## LoopCount:試行回数
 ## StartSeed:乱数の元の開始番号
-AccumulateKnowledge <- function(LoopCount, StartSeed, flgDoMulligan = TRUE) {
+## 2021.01.26 runMethodを追加:シミュレートさせる関数名
+AccumulateKnowledge <- function(LoopCount, StartSeed, runMethod = "MentalNote", flgDoMulligan = TRUE) {
 	## 引数のエラー処理
-	if (LoopCount < 1) { return("試行回数は1以上を指定してください。") }
+	if (LoopCount < 1) { stop("試行回数は1以上を指定してください。") }
 
 	StartTime = Sys.time()
 	print(StartTime)
 	for(i in 1:LoopCount) {
 		print(i)
-		Result <- MentalNote(StartSeed + i - 1, FALSE, flgDoMulligan)
+		if (runMethod == "MetalNote") {
+			Result <- MentalNote(StartSeed + i - 1, FALSE, flgDoMulligan)
+		} else if (runMethod == "GoblinLore") {
+			Result <- GoblinLore("Random", StartSeed + i - 1, FALSE)
+		}
 		if ( i == 1 ) {
 			TotalResult <- Result
 		} else {
@@ -461,9 +479,9 @@ AccumulateKnowledge <- function(LoopCount, StartSeed, flgDoMulligan = TRUE) {
 ## 戻り値:指定したカードがあるならDeckRowが、ないなら0を返す。
 MTG_CheckCardLibraryTop <- function(Player, DeckRow, flgIsRemoveCard = FALSE) {
 	## 引数のエラー処理
-	if (Player < 1 & Player > 2) { return("プレイヤの指定が正しくありません") }
-	if (Player == 1 & ( DeckRow < 1 | DeckRow > 60) ) { return("カードの指定が正しくありません") }
-	if (Player == 2 & ( DeckRow < 60 | DeckRow > 120) ) { return("カードの指定が正しくありません") }
+	if (Player < 1 & Player > 2) { stop("プレイヤの指定が正しくありません") }
+	if (Player == 1 & ( DeckRow < 1 | DeckRow > c_DECK_CARD_COUNT) ) { stop("カードの指定が正しくありません") }
+	if (Player == 2 & ( DeckRow < c_DECK_CARD_COUNT | DeckRow > (c_DECK_CARD_COUNT * 2)) ) { stop("カードの指定が正しくありません") }
 	
 	tempRow <- list()
 	tempList <- DeckOnTop[[Player]]
@@ -488,9 +506,9 @@ MTG_CheckCardLibraryTop <- function(Player, DeckRow, flgIsRemoveCard = FALSE) {
 ## 戻り値:指定したカードがあるならDeckRowが、ないなら0を返す。
 MTG_CheckCardLibraryBottom <- function(Player, DeckRow, flgIsRemoveCard = FALSE) {
 	## 引数のエラー処理
-	if (Player < 1 & Player > 2) { return("プレイヤの指定が正しくありません") }
-	if (Player == 1 & ( DeckRow < 1 | DeckRow > 60) ) { return("カードの指定が正しくありません") }
-	if (Player == 2 & ( DeckRow < 60 | DeckRow > 120) ) { return("カードの指定が正しくありません") }
+	if (Player < 1 & Player > 2) { stop("プレイヤの指定が正しくありません") }
+	if (Player == 1 & ( DeckRow < 1 | DeckRow > c_DECK_CARD_COUNT) ) { stop("カードの指定が正しくありません") }
+	if (Player == 2 & ( DeckRow < c_DECK_CARD_COUNT | DeckRow > (c_DECK_CARD_COUNT * 2)) ) { stop("カードの指定が正しくありません") }
 	
 	tempRow <- list()
 	tempList <- DeckOnBottom[[Player]]
@@ -513,9 +531,9 @@ MTG_CheckCardLibraryBottom <- function(Player, DeckRow, flgIsRemoveCard = FALSE)
 ## DeckRowのカードをライブラリの上に乗せる。
 MTG_SetCardLibraryTop <- function(Deck, Player, DeckRow) {
 	## 引数のエラー処理
-	if (Player < 1 & Player > 2) { return("プレイヤの指定が正しくありません") }
-	if (Player == 1 & ( DeckRow < 1 | DeckRow > 60) ) { return("カードの指定が正しくありません") }
-	if (Player == 2 & ( DeckRow < 60 | DeckRow > 120) ) { return("カードの指定が正しくありません") }
+	if (Player < 1 & Player > 2) { stop("プレイヤの指定が正しくありません") }
+	if (Player == 1 & ( DeckRow < 1 | DeckRow > c_DECK_CARD_COUNT) ) { stop("カードの指定が正しくありません") }
+	if (Player == 2 & ( DeckRow < c_DECK_CARD_COUNT | DeckRow > (c_DECK_CARD_COUNT * 2)) ) { stop("カードの指定が正しくありません") }
 	
 	## 指定されたカードが既にライブラリの上や底にあったら削除する。
 	tempRow <- MTG_CheckCardLibraryTop(Player, DeckRow, TRUE)
@@ -536,9 +554,9 @@ MTG_SetCardLibraryTop <- function(Deck, Player, DeckRow) {
 ## DeckRowのカードをライブラリの底に入れる。。
 MTG_SetCardLibraryBottom <- function(Deck, Player, DeckRow) {
 	## 引数のエラー処理
-	if (Player < 1 & Player > 2) { return("プレイヤの指定が正しくありません") }
-	if (Player == 1 & ( DeckRow < 1 | DeckRow > 60) ) { return("カードの指定が正しくありません") }
-	if (Player == 2 & ( DeckRow < 60 | DeckRow > 120) ) { return("カードの指定が正しくありません") }
+	if (Player < 1 & Player > 2) { stop("プレイヤの指定が正しくありません") }
+	if (Player == 1 & ( DeckRow < 1 | DeckRow > c_DECK_CARD_COUNT) ) { stop("カードの指定が正しくありません") }
+	if (Player == 2 & ( DeckRow < c_DECK_CARD_COUNT | DeckRow > (c_DECK_CARD_COUNT * 2)) ) { stop("カードの指定が正しくありません") }
 	
 	## 指定されたカードが既にライブラリの上や底にあったら削除する。
 	tempRow <- MTG_CheckCardLibraryTop(Player, DeckRow, TRUE)
@@ -568,8 +586,8 @@ MTG_SetCardLibraryBottom <- function(Deck, Player, DeckRow) {
 ## flgShowHistory:対戦経過をConsoleへ出力するか
 MTG_Mulligan <- function(Deck, Player, FirstPlayer, flgShowHistory) {
 	## 引数のエラー処理
-	if (Player < 1 & Player > 2) { return("プレイヤの指定が正しくありません") }
-	if (FirstPlayer < 1 & FirstPlayer > 2) { return("先手プレイヤの指定が正しくありません") }
+	if (Player < 1 & Player > 2) { stop("プレイヤの指定が正しくありません") }
+	if (FirstPlayer < 1 & FirstPlayer > 2) { stop("先手プレイヤの指定が正しくありません") }
 
 	MulliganCount <- 0
 	while (MulliganCount < 3) {
@@ -626,6 +644,351 @@ MTG_Mulligan <- function(Deck, Player, FirstPlayer, flgShowHistory) {
 
 	return(Deck)
 }
+
+
+## Rで強化学習してみる。
+
+library(ReinforcementLearning)
+
+## マリガンなしで取りあえず強化学習出来るか確認する。
+## 学習用の対戦データを作る。
+
+c_DECK_CARD_COUNT = 15
+
+## Simple Deck(計算量削減で15枚デッキとする。)
+## Deck1: 山 5: 稲妻 10
+## Deck2: 森 5: 熊 10
+
+## 各プレイヤーのデッキをデッキに入れる
+MTG_SetDeck <- function(Deck) {
+
+	## プレイヤー１のデッキ
+	Deck$Card[1:5] <- 1
+	Deck$Card[6:15] <- 101
+	## プレイヤー２のデッキ
+	Deck$Card[16:20] <- 2
+	Deck$Card[21:30]<- 102
+	
+	return(Deck)
+}
+
+## 強化学習方針
+## 
+## 山デッキを強化学習する。
+## １アクションごとにState, Action, NextState, Rewardが含まれるData.frameを準備する。
+## アクションは、
+## ・土地をセット
+## ・スペルを使う
+## の2つだけ。
+## 状態(State)はDeckを渡すと、文字列を返す関数を作る。
+## またDeckのDeckRowや後半部分のCardの内容は必要ない。
+## 報酬(Reward)は勝利100P、負け0P、引き分け30P、HPを1減らすごとに1Pと定義する。
+## 
+## 強化学習方針　終わり
+
+## ReinforcementLearningで、使用する学習用データ
+ManaBattery <- data.frame(State = NULL, Action = NULL, NextState = NULL, Reward = NULL)
+
+## ManaBatteryにデータを書き込む
+Urza <- function( state, action, nextState, reward ) {
+
+	ManaBattery <- data.frame(State = state, Action = action, NextState = nextState, Reward = reward)
+
+	return (ManaBattery)
+}
+
+## ゲームの状態は取りあえず、Deckだけ使って見る。
+MTG_state <- function(Deck) {
+
+	## Deckから必要な列だけ抽出する
+	state <- dplyr::select(Deck, Card, Status)
+	## 手札、場、墓地、ライブラリの順番に並び替える。
+	## そのためライブラリのコードを一旦最後に持っていく。
+	state$Status[state$Status == 0] <- 4
+	
+	state <- dplyr::arrange(state, Status, Card)
+	
+	state$Card[state$Card == 1] <- "M"
+	state$Card[state$Card == 2] <- "F"
+	state$Card[state$Card == 101] <- "L"
+	state$Card[state$Card == 102] <- "B"
+
+	state$Status[state$Status == 1] <- "h"
+	state$Status[state$Status == 2] <- "b"
+	state$Status[state$Status == 3] <- "g"
+	state$Status[state$Status == 4] <- "d"
+
+	state <- stringr::str_c(state$Card, state$Status)
+	state <- stringr::str_c(state, collapse = "")
+	return (state)
+}
+
+
+## ランダムなアクション選択方式
+MTG_getRandomAction <- function(TurnCount) {
+	action <- NULL
+	while (is.null(action) == TRUE) {
+		n <- as.integer(runif(1, min = 1, max = 4) )
+		if (n == 1) {
+			## パスアクション（けど１ターン目からパスされると盤面進まないのではじめのころは選ばれづらくする）
+			if ( as.integer( (TurnCount + 1)/ 2) > as.integer(runif(1, min = 1, max = 10)) ) {
+				action <- "P"
+			} 
+		} else if (n == 2) {
+			## 土地を置くアクション
+			action <- "L"
+		} else if (n == 3) {
+			## スペルを使うアクション
+			action <- "S"
+		}
+	}
+	return(action)
+}
+
+## MentalNoteとほぼ同じだけど、用途が違うので別の名前にしておく。
+## method: Random, Greedy
+GoblinLore <- function(method, RandomSeed = 0, flgShowHistory = FALSE) {
+	if (method %in% c("Random", "Greedy") == FALSE) { stop("アクション決定手段の指定が正しくありません") }
+
+	## デッキを準備する。
+	Deck <- MTG_Init()
+
+	## 乱数の元が指定されていたらセットする。（同じ展開になる）
+	if (RandomSeed != 0) {
+		set.seed(RandomSeed)
+	}
+
+	## 初期手札を決める。
+	Deck <- MTG_Draw(Deck, 1, 7)
+	Deck <- MTG_Draw(Deck, 2, 7)
+	
+	## ライフとマナの初期値を設定する。
+	HP <<- c(20,20)
+	Mana <<- c(0, 0)
+	
+	## 強化学習で使うための変数定義
+	last_state <- NULL
+	last_action <- NULL
+	last_HP <- HP[2]
+	flgIsSetLand <- FALSE
+	flgTurnEnd <- FALSE
+
+	## 先手プレイヤーを決める
+	TurnCount = 1
+	FirstPlayer = as.integer(runif(1, min = 1, max =3) )
+	ActivePlayer = FirstPlayer
+	
+	## 勝敗が付くまでターンを進める。
+	WinPlayer <- MTG_CheckVictory()
+	
+	## 15枚デッキなので最大で17ターン。それで決着付かなかった場合は引き分け。
+	while (WinPlayer == 0 && TurnCount <= 17) {
+
+		## アンタップ、アップキープ
+		Deck <<- MTG_TurnStart(Deck, ActivePlayer)
+
+		## 先手１ターン目はドローなし
+		if (TurnCount > 1) {
+			Deck <- MTG_Draw(Deck, ActivePlayer, 1)
+		}
+
+		if (ActivePlayer == 1) {
+			flgTurnEnd = FALSE
+			## 山デッキ側は、指定されたメソッドに応じて手を打つ。
+			while (flgTurnEnd == FALSE) {
+				if (is.null(last_action) == FALSE) {
+					## 前回のアクションの結果を記録する。
+					reward <- last_HP - HP[2]
+					if (nrow(ManaBattery) > 0) {
+						ManaBattery <<- rbind(ManaBattery, Urza(last_state, last_action, MTG_state(Deck), reward) )
+					} else {
+						ManaBattery <<- Urza(last_state, last_action, MTG_state(Deck), reward)
+					}
+					last_action <- NULL
+				}
+				
+				## アクションを決める。
+				if (method == "Random") {
+					action <- MTG_getRandomAction(TurnCount)
+				} else if (method == "Greedy") {
+					## 後でGreedyのアクション選択ロジックを追加する
+					action <- MTG_getGreedyAction(MTG_state(Deck))
+				} else {
+				}
+				
+				## 決めたアクションが実行可能か
+				if (action == "P") {
+					## パスアクション（何もしない）
+					last_action <- action
+					last_HP <- HP[2]
+					last_state <- MTG_state(Deck)
+					flgTurnEnd <- TRUE
+				} else if (action == "L") {
+					## 土地を置くアクション
+					if (flgIsSetLand == FALSE) {
+						last_action <- action
+						last_HP <- HP[2]
+						last_state <- MTG_state(Deck)
+						Deck <- MTG_SetLand(Deck, ActivePlayer)
+						flgIsSetLand <- TRUE
+					}
+				} else if (action == "S") {
+					## スペルを使うアクション
+					if (Mana[1] > 0) {
+						last_action <- action
+						last_HP <- HP[2]
+						last_state <- MTG_state(Deck)
+						Deck <- MTG_PlaySpell(Deck, ActivePlayer)
+					}
+				}
+				
+				## 手札に土地がなければセットランド済みとする
+				if (nrow(dplyr::filter(Deck, PlayerId == 1 & Status == 1 & Type == "Land")) == 0) {
+					flgIsSetLand <- TRUE
+				}
+				
+				## 土地をセットして、使用可能マナがないならTurn終了
+				if (flgIsSetLand == TRUE & Mana[1] == 0) {
+					flgTurnEnd <- TRUE
+				}
+				## 土地をセットして、手札に土地以外がないならTurn終了
+				if (flgIsSetLand == TRUE && nrow(dplyr::filter(Deck, PlayerId == 1 & Status == 1 & Type != "Land")) == 0 ) {
+					flgTurnEnd <- TRUE
+				}
+				## ターン終了時にアクションが決定されていなかったらパスアクションにする。
+				if (flgTurnEnd == TRUE && is.null(last_action)) {
+					last_action <- "P"
+					last_HP <- HP[2]
+					last_state <- MTG_state(Deck)
+				}
+				if (flgShowHistory == TRUE) {
+					cat(TurnCount)
+					cat("ターン目\n")
+					cat("action")
+					print(action)
+					cat("last_action")
+					print(last_action)
+					cat("flgTurnEnd")
+					print(flgTurnEnd)
+				}
+			}
+		} else {
+			## 森デッキは、今までと同じ。
+			## 第一メインフェイズに土地を置く
+			Deck <- MTG_SetLand(Deck, ActivePlayer)
+			
+			## 攻撃フェイズ
+			Deck <- MTG_Attack(Deck, ActivePlayer)
+
+			## 第二メインフェイズ
+			Deck <- MTG_PlaySpell(Deck, ActivePlayer)
+		}
+		
+		WinPlayer <- MTG_CheckVictory()
+
+		## 終了フェイズ
+		Deck <- MTG_TurnEnd(Deck, ActivePlayer)
+		
+		## コンソールに途中経過を出力する。
+		if (flgShowHistory == TRUE) {
+			cat(TurnCount)
+			cat("ターン目\n")
+			if (ActivePlayer == 1) {
+				cat("山デッキ:")
+				cat(MTG_Hand(Deck, 1, TRUE))
+				cat("\n")
+			} else {
+				cat("森デッキ:")
+				cat(MTG_Hand(Deck, 2, TRUE))
+				cat("\n")
+			}
+			print(HP)
+			print(Mana)
+		}
+		
+		if (WinPlayer != 0) {
+			break
+		}
+		
+		ActivePlayer = MTG_SwitchPlayer(ActivePlayer)
+		TurnCount = TurnCount + 1
+	}
+	
+	## 勝敗を判定する。
+	if (WinPlayer == 1) {
+		LosePlayer = 2
+		reward = 100
+	} else if (WinPlayer == 2) {
+		LosePlayer = 1
+		reward = 0
+	} else {
+		LosePlayer = 0
+		reward = 30
+	}
+	## 最後のアクションの結果を記録する。
+	reward <- reward + last_HP - HP[2]
+	
+	if (flgShowHistory == TRUE) {
+		cat("last_state")
+		print(last_state)
+		cat("last_action")
+		print(last_action)
+		cat("reward")
+		print(reward)
+	}
+	
+	ManaBattery <<- rbind(ManaBattery, Urza(last_state, last_action, MTG_state(Deck), reward) )
+
+	## ゲームを記録して終了。
+	if (WinPlayer != 0) {
+		GameLog <- data.frame(
+			"RandomSeed" = RandomSeed,
+			"WinPlayer" = WinPlayer,
+			"FirstPlayer" = FirstPlayer,
+			"HPWin" = HP[WinPlayer],
+			"HPLose" = HP[LosePlayer],
+			"finalTurn" = TurnCount
+		)
+	} else {
+		GameLog <- data.frame(
+			"RandomSeed" = RandomSeed,
+			"WinPlayer" = 0,
+			"FirstPlayer" = FirstPlayer,
+			"HPWin" = HP[1],
+			"HPLose" = HP[2],
+			"finalTurn" = TurnCount
+		)
+	}
+	return(GameLog)
+}
+
+## これで作成出来た貴重なManaBatteryを利用して強化学習する。
+
+## https://cran.r-project.org/web/packages/ReinforcementLearning/vignettes/ReinforcementLearning.html
+
+# Define reinforcement learning parameters
+control <- list(alpha = 0.2, gamma = 0.4, epsilon = 0.1)
+
+# Perform reinforcement learning
+model <- ReinforcementLearning(ManaBattery, s = "State", a = "Action", r = "Reward", 
+                               s_new = "NextState", iter = 1, control = control)
+
+# Calculate optimal policy
+pol <- computePolicy(model)
+
+# Print policy
+head(pol)
+
+predict(model, data_unseen#state)
+
+## 学習した結果に基づくアクションを返す。
+MTG_getGreedyAction <- function(state) {
+	action <- predict(model, state)
+	return(action)
+}
+
+
+
 
 
 
@@ -745,3 +1108,19 @@ Deck <- MTG_Mulligan(Deck, 1, 1, TRUE)
 
 Result <- MentalNote(603, TRUE, TRUE)
 Result <- MentalNote(603, TRUE, FALSE)
+
+
+## GoblinLore Test
+Result <- GoblinLore("Random", 1, TRUE)
+
+RandomResult <- AccumulateKnowledge(1000, 1, "GoblinLore")
+
+save(ManaBattery, file="c:/yanagawa/R/ManaBattery_random.dat")
+
+table(RandomResult$WinPlayer)
+
+  0   1   2 
+  2   9 989 
+
+Result <- GoblinLore("Greedy", 1, TRUE)
+
