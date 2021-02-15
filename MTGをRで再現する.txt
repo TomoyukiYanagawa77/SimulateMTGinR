@@ -292,6 +292,7 @@ MTG_Attack <- function(Deck, Player, flgShowHistory = FALSE) {
 					}
 					if (OpponentCreature$Power[j] >= AttackingCreature$Toughness[i] ) {
 						Deck$Status[AttackingCreature$DeckRow[i]] <- c_CARD_STATUS_GRAVEYARD
+						AttackingCreature$Status[i] <- c_CARD_STATUS_GRAVEYARD
 					}
 					## ブロックしたクリーチャーをプロッククリーチャーから取り除く
 					OpponentCreature[1] <- NULL
