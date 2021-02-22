@@ -16,6 +16,9 @@ c_CARD_STATUS_BA_SS <- "s"		## 場に召喚酔い状態である
 c_CARD_STATUS_GRAVEYARD <- "g"	## 墓地にある
 c_CARD_STATUS_EXALED <- "e"		## 追放された
 
+## カードステータスの並び替えの順番を定義しておく。
+c_CARD_STATUS_ORDER <- c(c_CARD_STATUS_HAND, c_CARD_STATUS_BA_UNTAP, c_CARD_STATUS_BA_SS, c_CARD_STATUS_BA_TAP, c_CARD_STATUS_GRAVEYARD, c_CARD_STATUS_EXALED, c_CARD_STATUS_LIBRARY)
+
 
 ## Simple Deck
 ## Deck1: 山 20: 稲妻 40
@@ -287,10 +290,10 @@ MTG_Attack <- function(Deck, Player, flgShowHistory = FALSE) {
 				}
 				if (flgHasBlocked == TRUE) {
 					## ブロック成立
-					if (AttackingCreature$Power[i] >= OpponentCreature$Toughness[j] ) {
-						Deck$Status[OpponentCreature$DeckRow[j]] <- c_CARD_STATUS_GRAVEYARD
+					if (AttackingCreature$Power[i] >= OpponentCreature$Toughness[1] ) {
+						Deck$Status[OpponentCreature$DeckRow[1]] <- c_CARD_STATUS_GRAVEYARD
 					}
-					if (OpponentCreature$Power[j] >= AttackingCreature$Toughness[i] ) {
+					if (OpponentCreature$Power[1] >= AttackingCreature$Toughness[i] ) {
 						Deck$Status[AttackingCreature$DeckRow[i]] <- c_CARD_STATUS_GRAVEYARD
 						AttackingCreature$Status[i] <- c_CARD_STATUS_GRAVEYARD
 					}
@@ -345,7 +348,7 @@ MTG_TurnStart <- function(Deck, Player) {
 ## 2021.01.26 高速化ロジックで統一
 MTG_TurnEnd <- function(Deck, Player) {
 
-	Hand <- Deck %>% filter(PlayerId == Player & Status == 1)
+	Hand <- Deck %>% filter(PlayerId == Player & Status == c_CARD_STATUS_HAND)
 
 	CardCount <- nrow(Hand)
 	while (CardCount > 7) {
@@ -353,6 +356,10 @@ MTG_TurnEnd <- function(Deck, Player) {
 		Deck$Status[Hand$DeckRow[n]] <- c_CARD_STATUS_GRAVEYARD
 		CardCount = CardCount - 1
 	}
+	
+	## PowerとToughnessを更新するためにCardマスターと再度マッチさせる。
+	Deck <- dplyr::select(Deck, DeckRow, PlayerId, Card, Status)
+	Deck <- Deck %>% inner_join(Cards, by = c("Card" = "Id") )
 
 	return(Deck)
 }
@@ -449,7 +456,7 @@ MentalNote <- function(RandomSeed = 0, flgShowHistory = FALSE, flgDoMulligan = T
 	
 	## 勝敗が付くまでターンを進める。
 	WinPlayer <- MTG_CheckVictory()
-	while (WinPlayer == 0 && TurnCount <= (c_DECK_CARD_COUNT * 2 - 7*2 + 1) ) {
+	while (WinPlayer == 0 && TurnCount <= ((c_DECK_CARD_COUNT - 7) *2 + 1) ) {
 
 ##Teferi("TurnStart")
 
@@ -470,7 +477,7 @@ MentalNote <- function(RandomSeed = 0, flgShowHistory = FALSE, flgDoMulligan = T
 
 ##Teferi("TurnDoMain")
 
-		## 第一メインフェイズに土地を置く
+		## 第一メインフェイズ
 		Deck <- MTG_DoMain(Deck, ActivePlayer, flgShowHistory)
 		
 ##Teferi("TurnAttack")
@@ -849,42 +856,77 @@ MTG_DoMain <- function(Deck, Player, flgShowHistory = FALSE) {
 }
 
 ## 生物呪文を唱える（クリーチャーを召喚する。）
-MTG_SummonCreature <- function(Deck, Player) {
+## 2021.02.18 CardIdを追加。
+MTG_SummonCreature <- function(Deck, Player, CardId = NULL) {
 
-	CreatureSpell <- Deck %>% 
-		dplyr::filter(PlayerId == Player, Type == "Creature", Status == c_CARD_STATUS_HAND) %>%
-		arrange(desc(ManaCost))
-	
-	if (nrow(CreatureSpell) > 0 & Mana[Player] > 0 ) {
-		for (i in 1:nrow(CreatureSpell)) {
-			if ( CreatureSpell$ManaCost[i] <= Mana[Player] ) {
-				Deck$Status[CreatureSpell$DeckRow[i]] <- c_CARD_STATUS_BA_SS
-				## 関数外の値を更新するので <を２つ入れる。
-				Mana[Player] <<- Mana[Player] - CreatureSpell$ManaCost[i]
+	if (is.null(CardId) ) {
+		## カードが指定されない時は、マナの続く限り生物を召喚する。
+		CreatureSpell <- Deck %>% 
+			dplyr::filter(PlayerId == Player, Type == "Creature", Status == c_CARD_STATUS_HAND) %>%
+			arrange(desc(ManaCost))
+		
+		if (nrow(CreatureSpell) > 0 & Mana[Player] > 0 ) {
+			for (i in 1:nrow(CreatureSpell)) {
+				if ( CreatureSpell$ManaCost[i] <= Mana[Player] ) {
+					Deck$Status[CreatureSpell$DeckRow[i]] <- c_CARD_STATUS_BA_SS
+					## 関数外の値を更新するので <を２つ入れる。
+					Mana[Player] <<- Mana[Player] - CreatureSpell$ManaCost[i]
+				}
 			}
 		}
+	} else {
+		## 手札から指定されたカードを探す。
+		CreatureSpell <- dplyr::filter(Deck, PlayerId == Player, Card == CardId, Status == c_CARD_STATUS_HAND)
+		
+		if (nrow(CreatureSpell) > 0 & Mana[Player] > 0 ) {
+			## 召喚する生物は１体だけ
+			if ( CreatureSpell$ManaCost[1] <= Mana[Player] ) {
+				Deck$Status[CreatureSpell$DeckRow[1]] <- c_CARD_STATUS_BA_SS
+				## 関数外の値を更新するので <を２つ入れる。
+				Mana[Player] <<- Mana[Player] - CreatureSpell$ManaCost[1]
+			}
+		}
+	
 	}
 	
 	return(Deck)
 }
 
 ## 対戦相手に呪文を唱える
-MTG_PlaySpell4Opponent <- function(Deck, Player) {
+## 2021.02.18 CardIdを追加。
+MTG_PlaySpell4Opponent <- function(Deck, Player, CardId = NULL) {
 
 	Opponent <- MTG_GetOpponent(Player)
-	Spell <- Deck %>% 
-		dplyr::filter(PlayerId == Player, Type == "Instant", Status == c_CARD_STATUS_HAND) %>%
-		arrange(ManaCost)
 	
-	if (nrow(Spell) > 0 & Mana[Player] > 0 ) {
-		for (i in 1:nrow(Spell)) {
-			if ( Spell$ManaCost[i] <= Mana[Player] ) {
-				Deck$Status[Spell$DeckRow[i]] <- c_CARD_STATUS_GRAVEYARD
-				## 関数外の値を更新するので <を２つ入れる。
-				Mana[Player] <<- Mana[Player] - Spell$ManaCost[i]
-				HP[Opponent] <<- HP[Opponent] - Spell$Power[i]
+	if (is.null(CardId) ) {
+		## カードが指定されない時は、マナの続く限りスペルを撃つ。
+		Spell <- Deck %>% 
+			dplyr::filter(PlayerId == Player, Type == "Instant", Status == c_CARD_STATUS_HAND) %>%
+			arrange(ManaCost)
+		
+		if (nrow(Spell) > 0 & Mana[Player] > 0 ) {
+			for (i in 1:nrow(Spell)) {
+				if ( Spell$ManaCost[i] <= Mana[Player] ) {
+					Deck$Status[Spell$DeckRow[i]] <- c_CARD_STATUS_GRAVEYARD
+					## 関数外の値を更新するので <を２つ入れる。
+					Mana[Player] <<- Mana[Player] - Spell$ManaCost[i]
+					HP[Opponent] <<- HP[Opponent] - Spell$Power[i]
+				}
 			}
 		}
+	} else {
+		## 手札から指定されたカードを探す。
+		Spell <- dplyr::filter(Deck, PlayerId == Player, Card == CardId, Status == c_CARD_STATUS_HAND)
+		if (nrow(Spell) > 0 & Mana[Player] > 0 ) {
+			## 使用するスペルは１つだけ
+			if ( Spell$ManaCost[1] <= Mana[Player] ) {
+				Deck$Status[Spell$DeckRow[1]] <- c_CARD_STATUS_GRAVEYARD
+				## 関数外の値を更新するので <を２つ入れる。
+				Mana[Player] <<- Mana[Player] - Spell$ManaCost[1]
+				HP[Opponent] <<- HP[Opponent] - Spell$Power[1]
+			}
+		}
+	
 	}
 	
 	return(Deck)
@@ -892,66 +934,110 @@ MTG_PlaySpell4Opponent <- function(Deck, Player) {
 
 ## 対戦相手の生物に呪文を唱える
 ## DeckRow:呪文を打ち込む対戦相手の生物のDeckRow
-MTG_PlaySpell4Creature <- function(Deck, Player, DeckRow) {
+## 2021.02.18 CardIdを追加。
+MTG_PlaySpell4Creature <- function(Deck, Player, DeckRow, CardId = NULL) {
 	## 引数のエラー処理
 	if (Deck$Type[DeckRow] != "Creature") { stop("対象のカードがクリーチャーではありません") }
 
-	Spell <- Deck %>% 
-		dplyr::filter(PlayerId == Player, Type == "Instant", Status == c_CARD_STATUS_HAND) %>%
-		arrange(ManaCost)
-	
-	if (nrow(Spell) > 0 & Mana[Player] > 0 ) {
-		for (i in 1:nrow(Spell)) {
-			if ( Spell$ManaCost[i] <= Mana[Player] & Spell$Power[i] >= Deck$Toughness[DeckRow] & Deck$Status[DeckRow] != c_CARD_STATUS_GRAVEYARD) {
-				Deck$Status[Spell$DeckRow[i]] <- c_CARD_STATUS_GRAVEYARD
+	if (is.null(CardId) ) {
+		## カードが指定されない時は、マナコストの低いほうから、対象の生物が破壊できるスペルを探して撃つ。
+		Spell <- Deck %>% 
+			dplyr::filter(PlayerId == Player, Type == "Instant", Status == c_CARD_STATUS_HAND) %>%
+			arrange(ManaCost)
+		
+		if (nrow(Spell) > 0 & Mana[Player] > 0 ) {
+			for (i in 1:nrow(Spell)) {
+				if ( Mana[Player] >= Spell$ManaCost[i] & Spell$Power[i] >= Deck$Toughness[DeckRow] & Deck$Status[DeckRow] != c_CARD_STATUS_GRAVEYARD) {
+					Deck$Status[Spell$DeckRow[i]] <- c_CARD_STATUS_GRAVEYARD
+					Deck$Status[DeckRow] <- c_CARD_STATUS_GRAVEYARD
+					## 関数外の値を更新するので <を２つ入れる。
+					Mana[Player] <<- Mana[Player] - Spell$ManaCost[i]
+					break
+				}
+			}
+		}
+	} else {
+		## 手札から指定されたカードを探す。
+		Spell <- dplyr::filter(Deck, PlayerId == Player, Card == CardId, Status == c_CARD_STATUS_HAND)
+		if (nrow(Spell) > 0 & Mana[Player] >= Spell$ManaCost[1] ) {
+			## 使用するスペルは１つだけ
+			Deck$Status[Spell$DeckRow[1]] <- c_CARD_STATUS_GRAVEYARD
+			## 関数外の値を更新するので <を２つ入れる。
+			Mana[Player] <<- Mana[Player] - Spell$ManaCost[1]
+			if (Spell$Power[1] >= Deck$Toughness[DeckRow] ) {
 				Deck$Status[DeckRow] <- c_CARD_STATUS_GRAVEYARD
-				## 関数外の値を更新するので <を２つ入れる。
-				Mana[Player] <<- Mana[Player] - Spell$ManaCost[i]
-				break
+			} else {
+				Deck$Toughness[DeckRow] <- Deck$Toughness[DeckRow] - Spell$Power[1]
 			}
 		}
 	}
-	
 	return(Deck)
 }
+
+## 対戦相手の場に存在する生物を探す
+MTG_SelectTargetCreature <- function(Deck, Player, CardId) {
+
+	Opponent <- MTG_GetOpponent(Player)
+	DeckRow <- 0
+
+	## 対戦相手の場に指定されたカードを探す。
+	## アンタップ -> 召喚酔い -> タップの順に探す
+	OpponentCreature <- dplyr::filter(Deck, PlayerId == Opponent, Card == CardId, Status == c_CARD_STATUS_BA_UNTAP)
+	if (nrow(OpponentCreature) >0 ) {
+		DeckRow = OpponentCreature$DeckRow[1]
+	}
+	if (DeckRow == 0) {
+		OpponentCreature <- dplyr::filter(Deck, PlayerId == Opponent, Card == CardId, Status == c_CARD_STATUS_BA_SS)
+		if (nrow(OpponentCreature) >0 ) {
+			DeckRow = OpponentCreature$DeckRow[1]
+		}
+	}
+	if (DeckRow == 0) {
+		OpponentCreature <- dplyr::filter(Deck, PlayerId == Opponent, Card == CardId, Status == c_CARD_STATUS_BA_TAP)
+		if (nrow(OpponentCreature) >0 ) {
+			DeckRow = OpponentCreature$DeckRow[1]
+		}
+	}
+	
+	if (DeckRow == 0) { stop("指定されたカードの生物が対戦相手の場に存在しません。") }
+
+	return(DeckRow)
+}
+
 
 
 ## Rで強化学習してみる。
 
 library(ReinforcementLearning)
+library(hash)
 
 ## マリガンなしで取りあえず強化学習出来るか確認する。
 ## 学習用の対戦データを作る。
-
-c_DECK_CARD_COUNT = 15
-
+##
+##c_DECK_CARD_COUNT = 15
+##
 ## Simple Deck(計算量削減で15枚デッキとする。)
 ## Deck1: 山 5: 稲妻 10
 ## Deck2: 森 5: 熊 10
 
 ## 各プレイヤーのデッキをデッキに入れる
-MTG_SetDeck <- function(Deck) {
-
-	## プレイヤー１のデッキ
-	Deck$Card[1:5] <- 1
-	Deck$Card[6:15] <- 3
-	## プレイヤー２のデッキ
-	Deck$Card[16:20] <- 2
-	Deck$Card[21:30]<- 4
-	
-	return(Deck)
-}
+##MTG_SetDeck <- function(Deck) {
+##
+##	## プレイヤー１のデッキ
+##	Deck$Card[1:5] <- 1
+##	Deck$Card[6:15] <- 3
+##	## プレイヤー２のデッキ
+##	Deck$Card[16:20] <- 2
+##	Deck$Card[21:30]<- 4
+##	
+##	return(Deck)
+##}
 
 ## 強化学習方針
 ## 
 ## 山デッキを強化学習する。
 ## １アクションごとにState, Action, NextState, Rewardが含まれるData.frameを準備する。
 ## アクションは、
-## ・土地をセット
-## ・スペルを使う
-## の2つだけ。
-## 状態(State)はDeck, HP, Mana, Turn, ActivePlayer, FirstPlayerを渡すと、文字列を返す関数を作る。
-## またDeckのDeckRowや後半部分のCardの内容は必要ない。
 ## 報酬(Reward)は勝利100P、負け0P、引き分け30P、HPを1減らすごとに1Pと定義する。
 ## 
 ## 強化学習方針　終わり
@@ -959,30 +1045,105 @@ MTG_SetDeck <- function(Deck) {
 ## ReinforcementLearningで、使用する学習用データ
 ManaBattery <- data.frame(State = NULL, Action = NULL, NextState = NULL, Reward = NULL)
 
-## ゲームの状態は取りあえず、Deckだけ使って見る。
-MTG_state <- function(Deck) {
+Q_Mask <- hash()
+
+## ゲームのstate(状態)を作る
+MTG_state <- function(Deck, Phase) {
+	## 引数のエラー処理
+	if (!(Phase %in% c("A", "D", "M")) ) {stop("フェイズの指定が正しくありません")}
 
 	## Deckから必要な列だけ抽出する
-	state <- dplyr::select(Deck, Card, Status)
-	## 手札、場、墓地、ライブラリの順番に並び替える。
-	## そのためライブラリのコードを一旦最後に持っていく。
-	state$Status[state$Status == 0] <- 4
-	
-	state <- dplyr::arrange(state, Status, Card)
-	
-	state$Card[state$Card == 1] <- "M"
-	state$Card[state$Card == 2] <- "F"
-	state$Card[state$Card == 3] <- "L"
-	state$Card[state$Card == 4] <- "B"
+	state <- dplyr::select(Deck, PlayerId, Card, Status)
 
-	state$Status[state$Status == 1] <- "h"
-	state$Status[state$Status == 2] <- "b"
-	state$Status[state$Status == 3] <- "g"
-	state$Status[state$Status == 4] <- "d"
+	## 対戦相手の手札
+	OpponentHand <- dplyr::filter(Deck, (PlayerId == 2 & Status == c_CARD_STATUS_HAND) )
 
+	## 対戦相手の手札とライブラリはstateから省く
+	state <- dplyr::filter(state, (PlayerId == 1 | (PlayerId == 2 & Status %in% c(c_CARD_STATUS_BA_UNTAP, c_CARD_STATUS_BA_TAP, c_CARD_STATUS_BA_SS))) )
+
+	## 並べ替える
+	state <- state %>%
+		mutate(cs_order = factor(Status, levels = c_CARD_STATUS_ORDER)) %>%
+		arrange(cs_order)
+
+	## stateを単なる文字列に変換する。
 	state <- stringr::str_c(state$Card, state$Status)
 	state <- stringr::str_c(state, collapse = "")
+
+	## フェイズを先頭に、対戦相手の手札枚数を最後に追加する。
+	state <- stringr::str_c(Phase, state, sep = "")
+	if (nrow(OpponentHand) >0) {
+		state <- stringr::str_c(state, "H", sep = "")
+		state <- stringr::str_c(state, nrow(OpponentHand), sep = "")
+	} else {
+		state <- stringr::str_c(state, "H0", sep = "")
+	}
+	## 使用可能マナ数も最後に追加する。（２マナ以上はまとめる。）
+	if (Mana[1] == 0) {
+		state <- stringr::str_c(state, "M0", sep = "")
+	} else if (Mana[1] == 1) {
+		state <- stringr::str_c(state, "M1", sep = "")
+	} else {
+		state <- stringr::str_c(state, "M2", sep = "")
+	}
+	
 	return (state)
+}
+
+## アクションマスクを作る。
+MTG_ActionMask <- function(Deck, state, Phase) {
+	## 引数のエラー処理
+	if (!(Phase %in% c('A', 'D', 'M')) ) {stop("フェイズの指定が正しくありません")}
+
+	## すべてFALSEで初期化する。
+	ActionName <- c('P', 'A1', 'A2', 'A3', 'D1', 'D2', 'D3', 'M1', 'M2', 'M3', 'M4', 'M5', 'M6', 'M7', 'M8', 'M9', 'M10')
+	Mask <- rep(FALSE, 17)
+	ActionMask <- as_tibble(data.frame(ActionName, Mask) )
+
+	## パスは常に選択可能	
+	ActionMask$Mask[1] <- TRUE
+
+	if (Phase == 'A') {
+		## 攻撃フェイズは、攻撃の3アクションのみTRUE
+		ActionMask$Mask[2:4] <- TRUE
+	} else if (Phase == 'D') {
+		## ブロックフェイズは、ブロックの3アクションのみTRUE
+		ActionMask$Mask[5:7] <- TRUE
+	} else if (Phase == 'M') {
+		## メインフェイズのstateが既にQ_Maskに存在したら、そのActionMaskを返す。
+		if (has.key(state, Q_Mask) ) {
+			ActionMask <- Q_Mask[[state]]
+		} else {
+			## Q_Maskに存在しなかったらアクションマスクを作る。
+			## 手札と、対戦相手の場にいる生物で取れるアクションが変わる。
+			Hand <- dplyr::filter(Deck, (PlayerId == 1 & Type != "Land" & Status == c_CARD_STATUS_HAND ) )
+			OpponentCreature <- dplyr::filter(Deck, (PlayerId == 2 & Type == "Creature" & Status %in% c(c_CARD_STATUS_BA_UNTAP, c_CARD_STATUS_BA_TAP, c_CARD_STATUS_BA_SS)) )
+			if (nrow(OpponentCreature) > 0 ) {
+				OpponentCreature <- c(0, OpponentCreature$Card)
+			} else {
+				OpponentCreature <- c(0)
+			}
+
+			MainMask <- rbind(	c( 8,  11,  10,  12),
+								c( 9,  14,  13,  15),
+								c(16,NULL,NULL,NULL),
+								c(17,NULL,NULL,NULL) )
+
+			col_num <- which(c(0, 4, 8, 9) %in% OpponentCreature)
+			row_num <- which(c(3, 7, 5 ,6) %in% Hand$Card)
+
+			action_num <- MainMask[row_num, col_num]
+			ActionMask$Mask[action_num] <- TRUE
+			if (Mana[1] < 2) {
+				## 使用可能マナ数以下のアクションを使用不可にする。
+				ActionMask$Mask[17] <- FALSE
+			}
+			## 作成したアクションマスクをQ_Maskに登録する。
+			Q_Mask[[state]] <- ActionMask
+		}
+	}
+
+	return(ActionMask)
 }
 
 Urza <- function( state, action, nextState, reward ) {
@@ -993,30 +1154,18 @@ Urza <- function( state, action, nextState, reward ) {
 }
 
 ## ランダムなアクション選択方式
-MTG_getRandomAction <- function(TurnCount) {
-	action <- NULL
-	while (is.null(action) == TRUE) {
-		n <- as.integer(runif(1, min = 1, max = 4) )
-		if (n == 1) {
-			## パスアクション（けど１ターン目からパスされると盤面進まないのではじめのころは選ばれづらくする）
-##			if ( as.integer( (TurnCount + 1)/ 2) > as.integer(runif(1, min = 1, max = 10)) ) {
-				action <- "P"
-##			} 
-		} else if (n == 2) {
-			## 土地を置くアクション
-			action <- "L"
-		} else if (n == 3) {
-			## スペルを使うアクション
-			action <- "S"
-		}
-	}
-	return(action)
+## 2021.02.17 アクションマスクを追加。
+MTG_getRandomAction <- function(ActionMask) {
+	AvailableAction <- dplyr::filter(ActionMask, Mask==TRUE)
+	actionCount <- nrow(AvailableAction)
+	n <- as.integer(runif(1, min = 1, max = (1 + actionCount)) )
+	return(AvailableAction$ActionName[n])
 }
 
 ## MentalNoteとほぼ同じだけど、用途が違うので別の名前にしておく。
 ## method: Random, Greedy
 GoblinLore <- function(method, RandomSeed = 0, flgShowHistory = FALSE) {
-	if (method %in% c("Random", "Greedy") == FALSE) { stop("アクション決定手段の指定が正しくありません") }
+	if ( !(method %in% c("Random", "Greedy")) ) { stop("アクション決定手段の指定が正しくありません") }
 
 	## デッキを準備する。
 	Deck <- MTG_Init()
@@ -1035,10 +1184,9 @@ GoblinLore <- function(method, RandomSeed = 0, flgShowHistory = FALSE) {
 	Mana <<- c(0, 0)
 	
 	## 強化学習で使うための変数定義
-	last_state <- NULL
-	last_action <- NULL
-	last_HP <- HP[2]
-	flgIsSetLand <- FALSE
+	lastState <- NULL
+	lastAction <- NULL
+	lastHP <- HP[2]
 	flgTurnEnd <- FALSE
 
 	## 先手プレイヤーを決める
@@ -1050,10 +1198,15 @@ GoblinLore <- function(method, RandomSeed = 0, flgShowHistory = FALSE) {
 	WinPlayer <- MTG_CheckVictory()
 	
 	## 15枚デッキなので最大で17ターン。それで決着付かなかった場合は引き分け。
-	while (WinPlayer == 0 && TurnCount <= 17) {
+	while (WinPlayer == 0 && TurnCount <= ((c_DECK_CARD_COUNT - 7) *2 + 1) ) {
 
+		if (flgShowHistory == TRUE) {
+			cat(TurnCount)
+			cat("ターン目\n")
+		}
+		
 		## アンタップ、アップキープ
-		Deck <<- MTG_TurnStart(Deck, ActivePlayer)
+		Deck <- MTG_TurnStart(Deck, ActivePlayer)
 
 		## 先手１ターン目はドローなし
 		if (TurnCount > 1) {
@@ -1061,96 +1214,134 @@ GoblinLore <- function(method, RandomSeed = 0, flgShowHistory = FALSE) {
 		}
 
 		if (ActivePlayer == 1) {
-			flgIsSetLand = FALSE
+		
+			## （可能なら）毎ターン土地はセットする。
+			Deck <- MTG_SetLand(Deck, ActivePlayer)
+		
 			flgTurnEnd = FALSE
+			## メインフェイズ
 			## 山デッキ側は、指定されたメソッドに応じて手を打つ。
 			while (flgTurnEnd == FALSE) {
-				if (is.null(last_action) == FALSE) {
+				## 現在の状態(state)とアクションマスクを求める。
+				currentState <- MTG_state(Deck, 'M')
+				ActionMask <- MTG_ActionMask(Deck, currentState, 'M')
+				
+				if (is.null(lastAction) == FALSE) {
 					## 前回のアクションの結果を記録する。
-					reward <- last_HP - HP[2]
+					reward <- lastHP - HP[2]
 					if (nrow(ManaBattery) > 0) {
-						ManaBattery <<- rbind(ManaBattery, Urza(last_state, last_action, MTG_state(Deck), reward) )
+						ManaBattery <<- rbind(ManaBattery, Urza(lastState, lastAction, currentState, reward) )
 					} else {
-						ManaBattery <<- Urza(last_state, last_action, MTG_state(Deck), reward)
+						ManaBattery <<- Urza(lastState, lastAction, currentState, reward)
 					}
-					last_action <- NULL
+					lastAction <- NULL
 				}
 				
 				## アクションを決める。
 				if (method == "Random") {
-					action <- MTG_getRandomAction(TurnCount)
+					action <- MTG_getRandomAction(ActionMask)
 				} else if (method == "Greedy") {
 					## 後でGreedyのアクション選択ロジックを追加する
-					action <- MTG_getGreedyAction(MTG_state(Deck))
+##					action <- MTG_getGreedyAction(currentState, ActionMask)
 				} else {
 				}
 				
-				## 決めたアクションが実行可能か
-				if (action == "P") {
-					## パスアクション（何もしない）
-					last_action <- action
-					last_HP <- HP[2]
-					last_state <- MTG_state(Deck)
+				if (is.null(action) ) { stop("アクションが決定されませんでした。") }
+				
+				## アクション実施前の状態を保存しておく
+				lastAction <- action
+				lastState <- currentState
+				lastHP <- HP[2]
+				
+				switch ( action,
+					"P" = {
+						## パスアクション（何もしない）
+						flgTurnEnd <- TRUE
+					},
+					"M1" = {
+						## 稲妻をプレイヤーに撃つ
+						Deck <- MTG_PlaySpell4Opponent(Deck, ActivePlayer, 3)
+					},
+					"M2" = {
+						## ショックをプレイヤーに撃つ
+						Deck <- MTG_PlaySpell4Opponent(Deck, ActivePlayer, 7)
+					},
+					"M3" = {
+						## 稲妻を果敢なエルフに撃つ
+						DeckRow <- MTG_SelectTargetCreature(Deck, ActivePlayer, 8)
+						Deck <- MTG_PlaySpell4Creature(Deck, ActivePlayer, DeckRow, 3)
+					},
+					"M4" = {
+						## 稲妻をシーリアのエルフに撃つ
+						DeckRow <- MTG_SelectTargetCreature(Deck, ActivePlayer, 4)
+						Deck <- MTG_PlaySpell4Creature(Deck, ActivePlayer, DeckRow, 3)
+					},
+					"M5" = {
+						## 稲妻をケンタウルスの狩猟者に撃つ
+						DeckRow <- MTG_SelectTargetCreature(Deck, ActivePlayer, 9)
+						Deck <- MTG_PlaySpell4Creature(Deck, ActivePlayer, DeckRow, 3)
+					},
+					"M6" = {
+						## ショックを果敢なエルフに撃つ
+						DeckRow <- MTG_SelectTargetCreature(Deck, ActivePlayer, 8)
+						Deck <- MTG_PlaySpell4Creature(Deck, ActivePlayer, DeckRow, 7)
+					},
+					"M7" = {
+						## ショックをシーリアのエルフに撃つ
+						DeckRow <- MTG_SelectTargetCreature(Deck, ActivePlayer, 4)
+						Deck <- MTG_PlaySpell4Creature(Deck, ActivePlayer, DeckRow, 7)
+					},
+					"M8" = {
+						## ショックをケンタウルスの狩猟者に撃つ
+						DeckRow <- MTG_SelectTargetCreature(Deck, ActivePlayer, 9)
+						Deck <- MTG_PlaySpell4Creature(Deck, ActivePlayer, DeckRow, 7)
+					},
+					"M9" = {
+						## モンスのゴブリン略奪隊を召喚する
+						Deck <- MTG_SummonCreature(Deck, ActivePlayer, 5)
+					},
+					"M10" = {
+						## ゴブリンの通り魔を召喚する
+						Deck <- MTG_SummonCreature(Deck, ActivePlayer, 6)
+					}
+				)
+				
+				## 使用可能マナがないならメインフェイズ終了
+				if (Mana[ActivePlayer] == 0) {
 					flgTurnEnd <- TRUE
-				} else if (action == "L") {
-					## 土地を置くアクション
-					if (flgIsSetLand == FALSE) {
-						last_action <- action
-						last_HP <- HP[2]
-						last_state <- MTG_state(Deck)
-						Deck <- MTG_SetLand(Deck, ActivePlayer)
-						flgIsSetLand <- TRUE
-					}
-				} else if (action == "S") {
-					## スペルを使うアクション
-					if (Mana[1] > 0) {
-						last_action <- action
-						last_HP <- HP[2]
-						last_state <- MTG_state(Deck)
-						Deck <- MTG_PlaySpell(Deck, ActivePlayer)
-					}
 				}
 				
-				## 手札に土地がなければセットランド済みとする
-				if (nrow(dplyr::filter(Deck, PlayerId == 1 & Status == 1 & Type == "Land")) == 0) {
-					flgIsSetLand <- TRUE
-				}
-				
-				## 土地をセットして、使用可能マナがないならTurn終了
-				if (flgIsSetLand == TRUE & Mana[1] == 0) {
-					flgTurnEnd <- TRUE
-				}
-				## 土地をセットして、手札に土地以外がないならTurn終了
-				if (flgIsSetLand == TRUE && nrow(dplyr::filter(Deck, PlayerId == 1 & Status == 1 & Type != "Land")) == 0 ) {
-					flgTurnEnd <- TRUE
-				}
 				## ターン終了時にアクションが決定されていなかったらパスアクションにする。
-				if (flgTurnEnd == TRUE && is.null(last_action)) {
-					last_action <- "P"
-					last_HP <- HP[2]
-					last_state <- MTG_state(Deck)
+				if (flgTurnEnd == TRUE && is.null(lastAction)) {
+					lastAction <- "P"
+					lastState <- currentState
+					lastHP <- HP[2]
 				}
 				if (flgShowHistory == TRUE) {
-					cat(TurnCount)
-					cat("ターン目\n")
 					cat("action")
 					print(action)
-					cat("last_action")
-					print(last_action)
 					cat("flgTurnEnd")
 					print(flgTurnEnd)
 				}
 			}
+			## 攻撃フェイズ(戻り値はリストで返ってくる。)
+			retList <- MTG_RL_Attack(Deck, ActivePlayer, method, lastAction, lastState, lastHP, flgShowHistory)
+			Deck <- retList[[1]]
+			lastAction <- retList[[2]]
+			lastState <- retList[[3]]
+			lastHP <- retList[[4]]
+			
 		} else {
 			## 森デッキは、今までと同じ。
-			## 第一メインフェイズに土地を置く
-			Deck <- MTG_SetLand(Deck, ActivePlayer)
+			## 第一メインフェイズ
+			Deck <- MTG_DoMain(Deck, ActivePlayer, flgShowHistory)
 			
 			## 攻撃フェイズ
-			Deck <- MTG_Attack(Deck, ActivePlayer)
-
-			## 第二メインフェイズ
-			Deck <- MTG_PlaySpell(Deck, ActivePlayer)
+			retList <- MTG_RL_Attack(Deck, ActivePlayer, method, lastAction, lastState, lastHP, flgShowHistory)
+			Deck <- retList[[1]]
+			lastAction <- retList[[2]]
+			lastState <- retList[[3]]
+			lastHP <- retList[[4]]
 		}
 		
 		WinPlayer <- MTG_CheckVictory()
@@ -1160,15 +1351,26 @@ GoblinLore <- function(method, RandomSeed = 0, flgShowHistory = FALSE) {
 		
 		## コンソールに途中経過を出力する。
 		if (flgShowHistory == TRUE) {
-			cat(TurnCount)
-			cat("ターン目\n")
+			Creature <- dplyr::filter(Deck, Type == "Creature", Status %in% c(c_CARD_STATUS_BA_UNTAP, c_CARD_STATUS_BA_TAP, c_CARD_STATUS_BA_SS))
 			if (ActivePlayer == 1) {
-				cat("山デッキ:")
+				cat("山デッキ（手札）:")
 				cat(MTG_Hand(Deck, 1, TRUE))
 				cat("\n")
+				cat("山デッキ（場）:")
+				cat(str_c(dplyr::filter(Creature, PlayerId == 1)$Name, collapse = ","))
+				cat("\n")
+				cat("森デッキ（場）:")
+				cat(str_c(dplyr::filter(Creature, PlayerId == 2)$Name, collapse = ","))
+				cat("\n")
 			} else {
-				cat("森デッキ:")
+				cat("森デッキ（手札）:")
 				cat(MTG_Hand(Deck, 2, TRUE))
+				cat("\n")
+				cat("森デッキ（場）:")
+				cat(str_c(dplyr::filter(Creature, PlayerId == 2)$Name, collapse = ","))
+				cat("\n")
+				cat("山デッキ（場）:")
+				cat(str_c(dplyr::filter(Creature, PlayerId == 1)$Name, collapse = ","))
 				cat("\n")
 			}
 			print(HP)
@@ -1195,18 +1397,20 @@ GoblinLore <- function(method, RandomSeed = 0, flgShowHistory = FALSE) {
 		reward = 30
 	}
 	## 最後のアクションの結果を記録する。
-	reward <- reward + last_HP - HP[2]
+	reward <- reward + lastHP - HP[2]
 	
 	if (flgShowHistory == TRUE) {
-		cat("last_state")
-		print(last_state)
-		cat("last_action")
-		print(last_action)
+		cat("lastState")
+		print(lastState)
+		cat("lastAction")
+		print(lastAction)
 		cat("reward")
 		print(reward)
 	}
 	
-	ManaBattery <<- rbind(ManaBattery, Urza(last_state, last_action, MTG_state(Deck), reward) )
+	## 最後のフェイズ判定
+	
+	ManaBattery <<- rbind(ManaBattery, Urza(lastState, lastAction, currentState, reward) )
 
 	## ゲームを記録して終了。
 	if (WinPlayer != 0) {
@@ -1230,6 +1434,232 @@ GoblinLore <- function(method, RandomSeed = 0, flgShowHistory = FALSE) {
 	}
 	return(GameLog)
 }
+
+## 強化学習の機能付きのアタック
+## Deck:使用中のDeck
+## Player:どちらのプレイヤーが攻撃するか
+## method:アクション選択方法
+## lastAction:直前のアクション
+## lastSate:直前のステータス
+## lastHP:直前の森デッキのHP
+## flgShowHistory:途中経過を表示するか
+MTG_RL_Attack <- function(Deck, Player, method, lastAction, lastState, lastHP, flgShowHistory = FALSE) {
+
+	## 戦場にある攻撃や防御可能な生物カードを取得する。
+	Opponent <- MTG_GetOpponent(Player)
+	MyCreature <- Deck %>%
+		dplyr::filter(PlayerId == Player, Type == "Creature", Status == c_CARD_STATUS_BA_UNTAP) %>%
+		arrange(Power)
+	OpponentCreature <- Deck %>%
+		dplyr::filter(PlayerId == Opponent, Type == "Creature", Status %in% c(c_CARD_STATUS_BA_UNTAP, c_CARD_STATUS_BA_SS) ) %>%
+		arrange(desc(Power))
+
+	if (nrow(MyCreature) == 0) {
+		## 攻撃クリーチャーがいないなら攻撃終了
+		if (flgShowHistory == TRUE) {
+			print("skip Attack")
+		}
+		return(list(Deck, lastAction, lastState, lastHP))
+	}
+
+	if (flgShowHistory == TRUE) {
+		cat("Attacker Creature:")
+		print(str_c(MyCreature$Name, collapse = ",") )
+		if (nrow(OpponentCreature) > 0) {
+			cat("Defender Creature:")
+			print(str_c(OpponentCreature$Name, collapse = ",") )
+		}
+	}
+
+	if (Player == 1) {
+		## 山デッキは、アクション選択の結果で攻撃する生物を決める。
+
+		## 現在の状態(state)とアクションマスクを求める。
+		currentState <- MTG_state(Deck, 'A')
+		ActionMask <- MTG_ActionMask(Deck, currentState, 'A')
+		
+		if (is.null(lastAction) == FALSE) {
+			## 前回のアクションの結果を記録する。
+			reward <- lastHP - HP[2]
+			if (nrow(ManaBattery) > 0) {
+				ManaBattery <<- rbind(ManaBattery, Urza(lastState, lastAction, currentState, reward) )
+			} else {
+				ManaBattery <<- Urza(lastState, lastAction, currentState, reward)
+			}
+			lastAction <- NULL
+		}
+		
+		## アクションを決める。
+		if (method == "Random") {
+			action <- MTG_getRandomAction(ActionMask)
+		} else if (method == "Greedy") {
+			## 後でGreedyのアクション選択ロジックを追加する
+##			action <- MTG_getGreedyAction(currentState, ActionMask)
+		} else {
+		}
+		
+		## アクション実施前の状態を保存しておく
+		lastAction <- action
+		lastState <- currentState
+		lastHP <- HP[2]
+		
+		if (flgShowHistory == TRUE) {
+			cat("action")
+			print(action)
+		}
+
+		switch ( action,
+			"P" = {
+				## パスアクション（攻撃しない）
+				AttackingCreature <- dplyr::filter(MyCreature, Type == "NONE")
+			},
+			"A1" = {
+				## 勝てる生物だけで攻撃
+				if (nrow(OpponentCreature) > 0) {
+					AttackingCreature <- dplyr::filter(MyCreature, Power > max(OpponentCreature$Toughness) )
+				} else {
+					AttackingCreature <- MyCreature
+				}
+			},
+			"A2" = {
+				## 相打ち出来る生物だけ攻撃
+				if (nrow(OpponentCreature) > 0) {
+					AttackingCreature <- dplyr::filter(MyCreature, Power >= max(OpponentCreature$Toughness) )
+				} else {
+					AttackingCreature <- MyCreature
+				}
+			},
+			"A3" = {
+				## すべて攻撃
+				AttackingCreature <- MyCreature
+			}
+		)
+	} else {
+		## 森デッキが、実際に攻撃するのは、防御側プレイヤーの生物と相打ち以上が出来るものだけ
+		if (nrow(OpponentCreature) > 0) {
+			AttackingCreature <- dplyr::filter(MyCreature, Power >= max(OpponentCreature$Toughness) )
+		} else {
+			AttackingCreature <- MyCreature
+		}
+	}
+
+	if (flgShowHistory == TRUE) {
+		cat("Attacking Creature:")
+		print(str_c(AttackingCreature$Name, collapse = ",") )
+	}
+	
+	## 攻撃したクリーチャーをタップ状態にする。
+	Deck$Status[Deck$DeckRow %in% AttackingCreature$DeckRow] <- c_CARD_STATUS_BA_TAP
+
+	## ブロック判定
+	if (Opponent == 1) {
+		## 山デッキのブロックは、アクション選択の結果で決める。
+	
+		## 現在の状態(state)とアクションマスクを求める。
+		currentState <- MTG_state(Deck, 'D')
+		ActionMask <- MTG_ActionMask(Deck, currentState, 'D')
+		
+		if (is.null(lastAction) == FALSE) {
+			## 前回のアクションの結果を記録する。
+			reward <- lastHP - HP[2]
+			if (nrow(ManaBattery) > 0) {
+				ManaBattery <<- rbind(ManaBattery, Urza(lastState, lastAction, currentState, reward) )
+			} else {
+				ManaBattery <<- Urza(lastState, lastAction, currentState, reward)
+			}
+			lastAction <- NULL
+		}
+		
+		## アクションを決める。
+		if (method == "Random") {
+			action <- MTG_getRandomAction(ActionMask)
+		} else if (method == "Greedy") {
+			## 後でGreedyのアクション選択ロジックを追加する
+#			action <- MTG_getGreedyAction(currentState, ActionMask)
+		} else {
+		}
+		
+		## アクション実施前の状態を保存しておく
+		lastAction <- action
+		lastState <- currentState
+		lastHP <- HP[2]
+
+		if (flgShowHistory == TRUE) {
+			cat("action")
+			print(action)
+		}
+	}	
+	
+	if (Opponent == 1 & action == 'P') {
+		## ブロックしない。
+	} else {
+		if (nrow(AttackingCreature) > 0 & nrow(OpponentCreature) > 0) {
+			## 攻撃クリーチャーそれぞれについて
+			for (i in 1:nrow(AttackingCreature)) {
+				flgHasBlocked <- FALSE
+				## まだブロックするクリーチャーが残っている。
+				if (nrow(OpponentCreature) > 0) {
+					if (Opponent == 1) {
+						## 山デッキのブロックアクション
+						switch ( action,
+							"D1" = {
+								## 勝てる生物だけでブロック
+								if (AttackingCreature$Power[i] < OpponentCreature$Toughness[1]) {
+									flgHasBlocked <- TRUE
+								}
+							},
+							"D2" = {
+								## 相打ち出来る生物だけでブロック
+								if (AttackingCreature$Power[i] <= OpponentCreature$Toughness[1]) {
+									flgHasBlocked <- TRUE
+								}
+							},,
+							"D3" = {
+								## 全部ブロック
+								flgHasBlocked <- TRUE
+							}
+						)
+					} else {
+						## 森デッキは相打ちでもブロックする。
+						if (AttackingCreature$Power[i] <= OpponentCreature$Toughness[1]) {
+							flgHasBlocked <- TRUE
+						}
+					}
+					if (flgHasBlocked == TRUE) {
+						## ブロック成立
+						if (AttackingCreature$Power[i] >= OpponentCreature$Toughness[1] ) {
+							Deck$Status[OpponentCreature$DeckRow[1]] <- c_CARD_STATUS_GRAVEYARD
+						}
+						if (OpponentCreature$Power[1] >= AttackingCreature$Toughness[i] ) {
+							Deck$Status[AttackingCreature$DeckRow[i]] <- c_CARD_STATUS_GRAVEYARD
+							AttackingCreature$Status[i] <- c_CARD_STATUS_GRAVEYARD
+						}
+						## ブロックしたクリーチャーをプロッククリーチャーから取り除く
+						OpponentCreature[1] <- NULL
+					}
+				}
+			}
+		}
+	}
+
+	## ブロックで死亡したクリーチャーを除外する
+	AttackingCreature <- dplyr::filter(AttackingCreature, Status != c_CARD_STATUS_GRAVEYARD)
+	
+	if (nrow(AttackingCreature) > 0 ) {
+	
+		if (flgShowHistory == TRUE) {
+			cat("Suvived Attacker:")
+			print(str_c(AttackingCreature$Name, collapse = ",") )
+		}
+
+		## 残ったAttackingCreatureのパワー分だけ相手プレイヤーのHPを減らす
+		## 関数外の値を更新するので <を２つ入れる。
+		HP[Opponent] <<- HP[Opponent] - sum(AttackingCreature$Power)
+	}
+
+	return(list(Deck, lastAction, lastState, lastHP))
+}
+
 
 ## これで作成出来た貴重なManaBatteryを利用して強化学習する。
 
@@ -1266,23 +1696,6 @@ MTG_getGreedyAction <- function(state) {
 	action <- predict(model, state)
 	return(action)
 }
-
-
-# リワードを長期で受け取るようにgammaを増やして学習させてみる。
-control <- list(alpha = 0.2, gamma = 0.9, epsilon = 0.1)
-
-> table(pol)
-pol
-  L   P   S 
-169   9 488 
-
-けど何も変わらないので、これでは駄目。
-
-## flgSetLandをターンの開始時にFALSEにしていないバグがあった。
--> バグを直すとランダムでも勝率8割超えだったので、pass1/3へ変更。
-
--> アクションとして選択できないものをモデルに教えるにはどうすればいいのかな？
-
 
 
 ## ここから先がテスト用もしくは、説明用のコード
@@ -1325,61 +1738,6 @@ load("c:/yanagawa/R/TotalResult.dat")
 TotalResult_wBlock <- TotalResult
 save(TotalResult_wBlock, file="c:/yanagawa/R/TotalResult_wBlock.dat")
 
-## 結果を確認してみる。
-table(TotalResult$WinPlayer)
-
-  1   2 
-832 168 
-
-table(TotalResult$WinPlayer, TotalResult$FirstPlayer)
-
-      1   2
-  1 417 415
-  2  92  76
-
-table(TotalResult$finalTurn)
-
-SummaryResult <- TotalResult %>%
-	group_by(finalTurn, WinPlayer) %>%
-	summarize(n = n())
-
-## グラフで表示
-ggplot(data = SummaryResult) +
-	geom_col(aes(x=finalTurn, y = n, fill = WinPlayer))
-
-## グラフを保存
-ggsave("c:/Yanagawa/R/pic/finalTurn.png", width = 30, height = 20, unit = "cm", dpi = 300)
-
-
-
-## 処理時間を調べてみる
-
-MentalNote(7, TRUE)
-MentalNote(7)
-
-
-## 5秒かかってるみたい
-## 何処を高速化するのが一番効果があるか確認する。
-
-TimeVault <- TimeVault %>%
-	mutate(processTime = lubridate::time_length(lubridate::interval(Time, lead(Time),) ) )
-
-TimeVault %>% arrange(desc(processTime) )
-
-
-## TurnAttackとTurnPlaySpellが遅い
-## forループを使っている為なので、それはやめた。
-## MTG_Init内でDeckとCardsを一回だけinner_joinするように変更した。
-
-
-
-## マリガン(意外と勝敗に関係なかった。あと、乱数固定してあるからマリガン処理入れてもおそらく同じ結果になる。)
-TotalResult %>% filter(WinPlayer == 2)
-
-MentalNote(603, TRUE)
-
-
-
 
 ## SetCardLibraryTop Test
 ## テスト用コード
@@ -1412,25 +1770,12 @@ Result <- GoblinLore("Random", 1, TRUE)
 
 RandomResult <- AccumulateKnowledge(1000, 1, "GoblinLore")
 
-table(RandomResult$WinPlayer)
-
-   1   2 
- 825 175 
-
-## passも３分の１へ変更
-  0   1   2 
-  4 214 782 
 
 save(ManaBattery, file="c:/yanagawa/R/ManaBattery_random.dat")
 
 load("c:/yanagawa/R/ManaBattery_random.dat")
 
-table(RandomResult$WinPlayer)
-
-  0   1   2 
-  2   9 989 
-
-Result <- GoblinLore("Greedy", 1, TRUE)
+#GreedyResult <- AccumulateKnowledge(1000, 1, "GrredyGoblin")
 
 
-GreedyResult <- AccumulateKnowledge(1000, 1, "GrredyGoblin")
+
