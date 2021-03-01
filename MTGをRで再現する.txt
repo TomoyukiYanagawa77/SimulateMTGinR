@@ -983,19 +983,19 @@ MTG_SelectTargetCreature <- function(Deck, Player, CardId) {
 	## 対戦相手の場に指定されたカードを探す。
 	## アンタップ -> 召喚酔い -> タップの順に探す
 	OpponentCreature <- dplyr::filter(Deck, PlayerId == Opponent, Card == CardId, Status == c_CARD_STATUS_BA_UNTAP)
-	if (nrow(OpponentCreature) >0 ) {
-		DeckRow = OpponentCreature$DeckRow[1]
+	if (nrow(OpponentCreature) > 0 ) {
+		DeckRow <- OpponentCreature$DeckRow[1]
 	}
 	if (DeckRow == 0) {
 		OpponentCreature <- dplyr::filter(Deck, PlayerId == Opponent, Card == CardId, Status == c_CARD_STATUS_BA_SS)
-		if (nrow(OpponentCreature) >0 ) {
-			DeckRow = OpponentCreature$DeckRow[1]
+		if (nrow(OpponentCreature) > 0 ) {
+			DeckRow <- OpponentCreature$DeckRow[1]
 		}
 	}
 	if (DeckRow == 0) {
 		OpponentCreature <- dplyr::filter(Deck, PlayerId == Opponent, Card == CardId, Status == c_CARD_STATUS_BA_TAP)
-		if (nrow(OpponentCreature) >0 ) {
-			DeckRow = OpponentCreature$DeckRow[1]
+		if (nrow(OpponentCreature) > 0 ) {
+			DeckRow <- OpponentCreature$DeckRow[1]
 		}
 	}
 	
@@ -1155,7 +1155,7 @@ Urza <- function( state, action, nextState, reward ) {
 
 ## ランダムなアクション選択方式
 ## 2021.02.17 アクションマスクを追加。
-MTG_getRandomAction <- function(ActionMask) {
+MTG_RL_getRandomAction <- function(ActionMask) {
 	AvailableAction <- dplyr::filter(ActionMask, Mask==TRUE)
 	actionCount <- nrow(AvailableAction)
 	n <- as.integer(runif(1, min = 1, max = (1 + actionCount)) )
@@ -1163,7 +1163,7 @@ MTG_getRandomAction <- function(ActionMask) {
 }
 
 ## MentalNoteとほぼ同じだけど、用途が違うので別の名前にしておく。
-## method: Random, Greedy
+## method: Random, GreedyGoblin
 GoblinLore <- function(method, RandomSeed = 0, flgShowHistory = FALSE) {
 	if ( !(method %in% c("Random", "Greedy")) ) { stop("アクション決定手段の指定が正しくありません") }
 
@@ -1187,6 +1187,7 @@ GoblinLore <- function(method, RandomSeed = 0, flgShowHistory = FALSE) {
 	lastState <- NULL
 	lastAction <- NULL
 	lastHP <- HP[2]
+	phase <- 'M'
 	flgTurnEnd <- FALSE
 
 	## 先手プレイヤーを決める
@@ -1222,29 +1223,12 @@ GoblinLore <- function(method, RandomSeed = 0, flgShowHistory = FALSE) {
 			## メインフェイズ
 			## 山デッキ側は、指定されたメソッドに応じて手を打つ。
 			while (flgTurnEnd == FALSE) {
-				## 現在の状態(state)とアクションマスクを求める。
-				currentState <- MTG_state(Deck, 'M')
-				ActionMask <- MTG_ActionMask(Deck, currentState, 'M')
-				
-				if (is.null(lastAction) == FALSE) {
-					## 前回のアクションの結果を記録する。
-					reward <- lastHP - HP[2]
-					if (nrow(ManaBattery) > 0) {
-						ManaBattery <<- rbind(ManaBattery, Urza(lastState, lastAction, currentState, reward) )
-					} else {
-						ManaBattery <<- Urza(lastState, lastAction, currentState, reward)
-					}
-					lastAction <- NULL
-				}
-				
-				## アクションを決める。
-				if (method == "Random") {
-					action <- MTG_getRandomAction(ActionMask)
-				} else if (method == "Greedy") {
-					## 後でGreedyのアクション選択ロジックを追加する
-##					action <- MTG_getGreedyAction(currentState, ActionMask)
-				} else {
-				}
+
+				phase <- 'M'
+				retList <- MTG_RL_getAction(Deck, lastState, lastAction, lastHP, method, phase, flgShowHistory)
+				Deck <- retList[[1]]
+				action <- retList[[2]]
+				currentState <- retList[[3]]
 				
 				if (is.null(action) ) { stop("アクションが決定されませんでした。") }
 				
@@ -1318,14 +1302,13 @@ GoblinLore <- function(method, RandomSeed = 0, flgShowHistory = FALSE) {
 					lastHP <- HP[2]
 				}
 				if (flgShowHistory == TRUE) {
-					cat("action")
-					print(action)
 					cat("flgTurnEnd")
 					print(flgTurnEnd)
 				}
 			}
 			## 攻撃フェイズ(戻り値はリストで返ってくる。)
-			retList <- MTG_RL_Attack(Deck, ActivePlayer, method, lastAction, lastState, lastHP, flgShowHistory)
+			phase <- 'A'
+			retList <- MTG_RL_Attack(Deck, ActivePlayer, method, phase, lastAction, lastState, lastHP, flgShowHistory)
 			Deck <- retList[[1]]
 			lastAction <- retList[[2]]
 			lastState <- retList[[3]]
@@ -1337,7 +1320,8 @@ GoblinLore <- function(method, RandomSeed = 0, flgShowHistory = FALSE) {
 			Deck <- MTG_DoMain(Deck, ActivePlayer, flgShowHistory)
 			
 			## 攻撃フェイズ
-			retList <- MTG_RL_Attack(Deck, ActivePlayer, method, lastAction, lastState, lastHP, flgShowHistory)
+			phase <- 'D'
+			retList <- MTG_RL_Attack(Deck, ActivePlayer, method, phase, lastAction, lastState, lastHP, flgShowHistory)
 			Deck <- retList[[1]]
 			lastAction <- retList[[2]]
 			lastState <- retList[[3]]
@@ -1408,8 +1392,7 @@ GoblinLore <- function(method, RandomSeed = 0, flgShowHistory = FALSE) {
 		print(reward)
 	}
 	
-	## 最後のフェイズ判定
-	
+	currentState <- MTG_state(Deck, phase)
 	ManaBattery <<- rbind(ManaBattery, Urza(lastState, lastAction, currentState, reward) )
 
 	## ゲームを記録して終了。
@@ -1439,11 +1422,12 @@ GoblinLore <- function(method, RandomSeed = 0, flgShowHistory = FALSE) {
 ## Deck:使用中のDeck
 ## Player:どちらのプレイヤーが攻撃するか
 ## method:アクション選択方法
+## phase:どのフェイズか(M:メインフェイス、A:アタックフェイス, D:ブロックフェイズ)
 ## lastAction:直前のアクション
 ## lastSate:直前のステータス
 ## lastHP:直前の森デッキのHP
 ## flgShowHistory:途中経過を表示するか
-MTG_RL_Attack <- function(Deck, Player, method, lastAction, lastState, lastHP, flgShowHistory = FALSE) {
+MTG_RL_Attack <- function(Deck, Player, method, phase, lastAction, lastState, lastHP, flgShowHistory = FALSE) {
 
 	## 戦場にある攻撃や防御可能な生物カードを取得する。
 	Opponent <- MTG_GetOpponent(Player)
@@ -1474,39 +1458,15 @@ MTG_RL_Attack <- function(Deck, Player, method, lastAction, lastState, lastHP, f
 	if (Player == 1) {
 		## 山デッキは、アクション選択の結果で攻撃する生物を決める。
 
-		## 現在の状態(state)とアクションマスクを求める。
-		currentState <- MTG_state(Deck, 'A')
-		ActionMask <- MTG_ActionMask(Deck, currentState, 'A')
-		
-		if (is.null(lastAction) == FALSE) {
-			## 前回のアクションの結果を記録する。
-			reward <- lastHP - HP[2]
-			if (nrow(ManaBattery) > 0) {
-				ManaBattery <<- rbind(ManaBattery, Urza(lastState, lastAction, currentState, reward) )
-			} else {
-				ManaBattery <<- Urza(lastState, lastAction, currentState, reward)
-			}
-			lastAction <- NULL
-		}
-		
-		## アクションを決める。
-		if (method == "Random") {
-			action <- MTG_getRandomAction(ActionMask)
-		} else if (method == "Greedy") {
-			## 後でGreedyのアクション選択ロジックを追加する
-##			action <- MTG_getGreedyAction(currentState, ActionMask)
-		} else {
-		}
-		
+		retList <- MTG_RL_getAction(Deck, lastState, lastAction, lastHP, method, phase, flgShowHistory)
+		Deck <- retList[[1]]
+		action <- retList[[2]]
+		currentState <- retList[[3]]
+
 		## アクション実施前の状態を保存しておく
 		lastAction <- action
 		lastState <- currentState
 		lastHP <- HP[2]
-		
-		if (flgShowHistory == TRUE) {
-			cat("action")
-			print(action)
-		}
 
 		switch ( action,
 			"P" = {
@@ -1552,91 +1512,66 @@ MTG_RL_Attack <- function(Deck, Player, method, lastAction, lastState, lastHP, f
 	Deck$Status[Deck$DeckRow %in% AttackingCreature$DeckRow] <- c_CARD_STATUS_BA_TAP
 
 	## ブロック判定
-	if (Opponent == 1) {
-		## 山デッキのブロックは、アクション選択の結果で決める。
-	
-		## 現在の状態(state)とアクションマスクを求める。
-		currentState <- MTG_state(Deck, 'D')
-		ActionMask <- MTG_ActionMask(Deck, currentState, 'D')
+	if (nrow(AttackingCreature) > 0 & nrow(OpponentCreature) > 0) {
+		if (Opponent == 1) {
+			## 山デッキのブロックは、アクション選択の結果で決める。
 		
-		if (is.null(lastAction) == FALSE) {
-			## 前回のアクションの結果を記録する。
-			reward <- lastHP - HP[2]
-			if (nrow(ManaBattery) > 0) {
-				ManaBattery <<- rbind(ManaBattery, Urza(lastState, lastAction, currentState, reward) )
-			} else {
-				ManaBattery <<- Urza(lastState, lastAction, currentState, reward)
-			}
-			lastAction <- NULL
+			retList <- MTG_RL_getAction(Deck, lastState, lastAction, lastHP, method, phase, flgShowHistory)
+			Deck <- retList[[1]]
+			action <- retList[[2]]
+			currentState <- retList[[3]]
+			
+			## アクション実施前の状態を保存しておく
+			lastAction <- action
+			lastState <- currentState
+			lastHP <- HP[2]
 		}
 		
-		## アクションを決める。
-		if (method == "Random") {
-			action <- MTG_getRandomAction(ActionMask)
-		} else if (method == "Greedy") {
-			## 後でGreedyのアクション選択ロジックを追加する
-#			action <- MTG_getGreedyAction(currentState, ActionMask)
-		} else {
-		}
-		
-		## アクション実施前の状態を保存しておく
-		lastAction <- action
-		lastState <- currentState
-		lastHP <- HP[2]
-
-		if (flgShowHistory == TRUE) {
-			cat("action")
-			print(action)
-		}
-	}	
-	
-	if (Opponent == 1 & action == 'P') {
-		## ブロックしない。
-	} else {
-		if (nrow(AttackingCreature) > 0 & nrow(OpponentCreature) > 0) {
-			## 攻撃クリーチャーそれぞれについて
-			for (i in 1:nrow(AttackingCreature)) {
-				flgHasBlocked <- FALSE
-				## まだブロックするクリーチャーが残っている。
-				if (nrow(OpponentCreature) > 0) {
-					if (Opponent == 1) {
-						## 山デッキのブロックアクション
-						switch ( action,
-							"D1" = {
-								## 勝てる生物だけでブロック
-								if (AttackingCreature$Power[i] < OpponentCreature$Toughness[1]) {
-									flgHasBlocked <- TRUE
-								}
-							},
-							"D2" = {
-								## 相打ち出来る生物だけでブロック
-								if (AttackingCreature$Power[i] <= OpponentCreature$Toughness[1]) {
-									flgHasBlocked <- TRUE
-								}
-							},,
-							"D3" = {
-								## 全部ブロック
+		## 攻撃クリーチャーそれぞれについて
+		for (i in 1:nrow(AttackingCreature)) {
+			flgHasBlocked <- FALSE
+			## まだブロックするクリーチャーが残っている。
+			if (nrow(OpponentCreature) > 0) {
+				if (Opponent == 1) {
+					## 山デッキのブロックアクション
+					switch ( action,
+						"P" = {
+							## ブロックしない
+						},
+						"D1" = {
+							## 勝てる生物だけでブロック
+							if (AttackingCreature$Power[i] < OpponentCreature$Toughness[1]) {
 								flgHasBlocked <- TRUE
 							}
-						)
-					} else {
-						## 森デッキは相打ちでもブロックする。
-						if (AttackingCreature$Power[i] <= OpponentCreature$Toughness[1]) {
+						},
+						"D2" = {
+							## 相打ち出来る生物だけでブロック
+							if (AttackingCreature$Power[i] <= OpponentCreature$Toughness[1]) {
+								flgHasBlocked <- TRUE
+							}
+						},,
+						"D3" = {
+							## 全部ブロック
 							flgHasBlocked <- TRUE
 						}
+					)
+				} else {
+					## 森デッキは相打ちでもブロックする。
+					if (AttackingCreature$Power[i] <= OpponentCreature$Toughness[1]) {
+						flgHasBlocked <- TRUE
 					}
-					if (flgHasBlocked == TRUE) {
-						## ブロック成立
-						if (AttackingCreature$Power[i] >= OpponentCreature$Toughness[1] ) {
-							Deck$Status[OpponentCreature$DeckRow[1]] <- c_CARD_STATUS_GRAVEYARD
-						}
-						if (OpponentCreature$Power[1] >= AttackingCreature$Toughness[i] ) {
-							Deck$Status[AttackingCreature$DeckRow[i]] <- c_CARD_STATUS_GRAVEYARD
-							AttackingCreature$Status[i] <- c_CARD_STATUS_GRAVEYARD
-						}
-						## ブロックしたクリーチャーをプロッククリーチャーから取り除く
-						OpponentCreature[1] <- NULL
+				}
+				if (flgHasBlocked == TRUE) {
+					## ブロック成立
+					if (AttackingCreature$Power[i] >= OpponentCreature$Toughness[1] ) {
+						Deck$Status[OpponentCreature$DeckRow[1]] <- c_CARD_STATUS_GRAVEYARD
 					}
+					if (OpponentCreature$Power[1] >= AttackingCreature$Toughness[i] ) {
+						Deck$Status[AttackingCreature$DeckRow[i]] <- c_CARD_STATUS_GRAVEYARD
+						AttackingCreature$Status[i] <- c_CARD_STATUS_GRAVEYARD
+					}
+					## ブロックしたクリーチャーをプロッククリーチャーから取り除く
+					OpponentCreature[1] <- NULL
 				}
 			}
 		}
@@ -1661,6 +1596,41 @@ MTG_RL_Attack <- function(Deck, Player, method, lastAction, lastState, lastHP, f
 }
 
 
+## 前回のアクションを記録しつつ、アクションを決定する。
+MTG_RL_getAction <- function(Deck, lastState, lastAction, lastHP, method, phase, flgShowHistory = FALSE) {
+
+	## 現在の状態(state)とアクションマスクを求める。
+	currentState <- MTG_state(Deck, phase)
+	ActionMask <- MTG_ActionMask(Deck, currentState, phase)
+	
+	if (is.null(lastAction) == FALSE) {
+		## 前回のアクションの結果を記録する。
+		reward <- lastHP - HP[2]
+		if (nrow(ManaBattery) > 0) {
+			ManaBattery <<- rbind(ManaBattery, Urza(lastState, lastAction, currentState, reward) )
+		} else {
+			ManaBattery <<- Urza(lastState, lastAction, currentState, reward)
+		}
+	}
+	
+	## アクションを決める。
+	if (method == "Random") {
+		action <- MTG_RL_getRandomAction(ActionMask)
+	} else if (method == "Greedy") {
+		## 後でGreedyのアクション選択ロジックを追加する
+##		action <- MTG_RL_getGreedyAction(currentState, ActionMask)
+	} else {
+	}
+	
+	if (flgShowHistory == TRUE) {
+		cat("action")
+		print(action)
+	}
+
+	return(list(Deck, action, currentState) )
+}
+
+
 ## これで作成出来た貴重なManaBatteryを利用して強化学習する。
 
 ## https://cran.r-project.org/web/packages/ReinforcementLearning/vignettes/ReinforcementLearning.html
@@ -1670,7 +1640,7 @@ control <- list(alpha = 0.2, gamma = 0.4, epsilon = 0.1)
 
 # Perform reinforcement learning
 model <- ReinforcementLearning(ManaBattery, s = "State", a = "Action", r = "Reward", 
-                               s_new = "NextState", iter = 1, control = control)
+                               s_new = "NextState", iter = 20, control = control)
 
 # Calculate optimal policy
 pol <- computePolicy(model)
@@ -1680,22 +1650,8 @@ head(pol)
 
 table(pol)
 
-pol
-  L   P   S 
-169   9 488 
 
-## passも３分の１へ変更
-pol
-   L    P    S 
-1182  194 1197 
 
-predict(model, data_unseen#state)
-
-## 学習した結果に基づくアクションを返す。
-MTG_getGreedyAction <- function(state) {
-	action <- predict(model, state)
-	return(action)
-}
 
 
 ## ここから先がテスト用もしくは、説明用のコード
@@ -1738,6 +1694,49 @@ load("c:/yanagawa/R/TotalResult.dat")
 TotalResult_wBlock <- TotalResult
 save(TotalResult_wBlock, file="c:/yanagawa/R/TotalResult_wBlock.dat")
 
+## 結果を確認してみる。
+table(TotalResult$WinPlayer)
+
+  1   2 
+832 168 
+
+table(TotalResult$WinPlayer, TotalResult$FirstPlayer)
+
+      1   2
+  1 417 415
+  2  92  76
+
+table(TotalResult$finalTurn)
+
+SummaryResult <- TotalResult %>%
+	group_by(finalTurn, WinPlayer) %>%
+	summarize(n = n())
+
+## グラフで表示
+ggplot(data = SummaryResult) +
+	geom_col(aes(x=finalTurn, y = n, fill = WinPlayer))
+
+## グラフを保存
+ggsave("c:/Yanagawa/R/pic/finalTurn.png", width = 30, height = 20, unit = "cm", dpi = 300)
+
+
+
+## 処理時間を調べてみる
+
+MentalNote(7, TRUE)
+MentalNote(7)
+
+
+## 5秒かかってるみたい
+## 何処を高速化するのが一番効果があるか確認する。
+
+TimeVault <- TimeVault %>%
+	mutate(processTime = lubridate::time_length(lubridate::interval(Time, lead(Time),) ) )
+
+TimeVault %>% arrange(desc(processTime) )
+
+
+
 
 ## SetCardLibraryTop Test
 ## テスト用コード
@@ -1770,12 +1769,12 @@ Result <- GoblinLore("Random", 1, TRUE)
 
 RandomResult <- AccumulateKnowledge(1000, 1, "GoblinLore")
 
-
 save(ManaBattery, file="c:/yanagawa/R/ManaBattery_random.dat")
 
 load("c:/yanagawa/R/ManaBattery_random.dat")
 
-#GreedyResult <- AccumulateKnowledge(1000, 1, "GrredyGoblin")
+Result <- GoblinLore("Greedy", 1, TRUE)
 
+GreedyResult <- AccumulateKnowledge(1000, 1, "GreedyGoblin")
 
 
