@@ -3,7 +3,6 @@
 library(tidymodels)
 library(tidyverse)
 
-
 ## 定数定義
 c_DECK_CARD_COUNT <- 60 ## 各デッキの枚数
 
@@ -557,6 +556,7 @@ MentalNote <- function(RandomSeed = 0, flgShowHistory = FALSE, flgDoMulligan = T
 }
 
 
+
 ## 最後にｎ回シミュレートさせる関数を作る。
 ## LoopCount:試行回数
 ## StartSeed:乱数の元の開始番号
@@ -569,7 +569,8 @@ AccumulateKnowledge <- function(LoopCount, StartSeed, runMethod = "MentalNote", 
 	StartTime = Sys.time()
 	print(StartTime)
 	for(i in 1:LoopCount) {
-		print(i)
+		cat(str_c(i, LoopCount, sep = "/"))
+		cat("\r")
 		if (runMethod == "MentalNote") {
 			Result <- MentalNote(StartSeed + i - 1, FALSE, flgDoMulligan)
 		} else if (runMethod == "GoblinLore") {
@@ -589,7 +590,6 @@ AccumulateKnowledge <- function(LoopCount, StartSeed, runMethod = "MentalNote", 
 	
 	return(TotalResult)
 }
-
 
 
 ## ロンドンマリガンで、毎回7枚引いて、マリガン回数分のカードを山札の最後に戻す。
@@ -1186,7 +1186,7 @@ GoblinLore <- function(method, RandomSeed = 0, flgShowHistory = FALSE) {
 	## 強化学習で使うための変数定義
 	lastState <- NULL
 	lastAction <- NULL
-	lastHP <- HP[2]
+	reward <- 0
 	phase <- 'M'
 	flgTurnEnd <- FALSE
 
@@ -1225,7 +1225,7 @@ GoblinLore <- function(method, RandomSeed = 0, flgShowHistory = FALSE) {
 			while (flgTurnEnd == FALSE) {
 
 				phase <- 'M'
-				retList <- MTG_RL_getAction(Deck, lastState, lastAction, lastHP, method, phase, flgShowHistory)
+				retList <- MTG_RL_getAction(Deck, lastState, lastAction, reward, method, phase, flgShowHistory)
 				Deck <- retList[[1]]
 				action <- retList[[2]]
 				currentState <- retList[[3]]
@@ -1235,7 +1235,7 @@ GoblinLore <- function(method, RandomSeed = 0, flgShowHistory = FALSE) {
 				## アクション実施前の状態を保存しておく
 				lastAction <- action
 				lastState <- currentState
-				lastHP <- HP[2]
+				reward <- 0
 				
 				switch ( action,
 					"P" = {
@@ -1299,20 +1299,25 @@ GoblinLore <- function(method, RandomSeed = 0, flgShowHistory = FALSE) {
 				if (flgTurnEnd == TRUE && is.null(lastAction)) {
 					lastAction <- "P"
 					lastState <- currentState
-					lastHP <- HP[2]
 				}
 				if (flgShowHistory == TRUE) {
 					cat("flgTurnEnd")
 					print(flgTurnEnd)
 				}
 			}
+			
+			WinPlayer <- MTG_CheckVictory()
+			if (WinPlayer != 0) {
+				break
+			}
+
 			## 攻撃フェイズ(戻り値はリストで返ってくる。)
 			phase <- 'A'
-			retList <- MTG_RL_Attack(Deck, ActivePlayer, method, phase, lastAction, lastState, lastHP, flgShowHistory)
+			retList <- MTG_RL_Attack(Deck, ActivePlayer, method, phase, lastAction, lastState, reward, flgShowHistory)
 			Deck <- retList[[1]]
 			lastAction <- retList[[2]]
 			lastState <- retList[[3]]
-			lastHP <- retList[[4]]
+			reward <- retList[[4]]
 			
 		} else {
 			## 森デッキは、今までと同じ。
@@ -1321,11 +1326,11 @@ GoblinLore <- function(method, RandomSeed = 0, flgShowHistory = FALSE) {
 			
 			## 攻撃フェイズ
 			phase <- 'D'
-			retList <- MTG_RL_Attack(Deck, ActivePlayer, method, phase, lastAction, lastState, lastHP, flgShowHistory)
+			retList <- MTG_RL_Attack(Deck, ActivePlayer, method, phase, lastAction, lastState, reward, flgShowHistory)
 			Deck <- retList[[1]]
 			lastAction <- retList[[2]]
 			lastState <- retList[[3]]
-			lastHP <- retList[[4]]
+			reward <- retList[[4]]
 		}
 		
 		WinPlayer <- MTG_CheckVictory()
@@ -1380,8 +1385,6 @@ GoblinLore <- function(method, RandomSeed = 0, flgShowHistory = FALSE) {
 		LosePlayer = 0
 		reward = 30
 	}
-	## 最後のアクションの結果を記録する。
-	reward <- reward + lastHP - HP[2]
 	
 	if (flgShowHistory == TRUE) {
 		cat("lastState")
@@ -1425,9 +1428,9 @@ GoblinLore <- function(method, RandomSeed = 0, flgShowHistory = FALSE) {
 ## phase:どのフェイズか(M:メインフェイス、A:アタックフェイス, D:ブロックフェイズ)
 ## lastAction:直前のアクション
 ## lastSate:直前のステータス
-## lastHP:直前の森デッキのHP
+## reward:AIに渡す報酬
 ## flgShowHistory:途中経過を表示するか
-MTG_RL_Attack <- function(Deck, Player, method, phase, lastAction, lastState, lastHP, flgShowHistory = FALSE) {
+MTG_RL_Attack <- function(Deck, Player, method, phase, lastAction, lastState, reward, flgShowHistory = FALSE) {
 
 	## 戦場にある攻撃や防御可能な生物カードを取得する。
 	Opponent <- MTG_GetOpponent(Player)
@@ -1443,7 +1446,7 @@ MTG_RL_Attack <- function(Deck, Player, method, phase, lastAction, lastState, la
 		if (flgShowHistory == TRUE) {
 			print("skip Attack")
 		}
-		return(list(Deck, lastAction, lastState, lastHP))
+		return(list(Deck, lastAction, lastState, reward))
 	}
 
 	if (flgShowHistory == TRUE) {
@@ -1458,7 +1461,7 @@ MTG_RL_Attack <- function(Deck, Player, method, phase, lastAction, lastState, la
 	if (Player == 1) {
 		## 山デッキは、アクション選択の結果で攻撃する生物を決める。
 
-		retList <- MTG_RL_getAction(Deck, lastState, lastAction, lastHP, method, phase, flgShowHistory)
+		retList <- MTG_RL_getAction(Deck, lastState, lastAction, reward, method, phase, flgShowHistory)
 		Deck <- retList[[1]]
 		action <- retList[[2]]
 		currentState <- retList[[3]]
@@ -1466,7 +1469,7 @@ MTG_RL_Attack <- function(Deck, Player, method, phase, lastAction, lastState, la
 		## アクション実施前の状態を保存しておく
 		lastAction <- action
 		lastState <- currentState
-		lastHP <- HP[2]
+		reward <- 0
 
 		switch ( action,
 			"P" = {
@@ -1505,7 +1508,11 @@ MTG_RL_Attack <- function(Deck, Player, method, phase, lastAction, lastState, la
 
 	if (flgShowHistory == TRUE) {
 		cat("Attacking Creature:")
-		print(str_c(AttackingCreature$Name, collapse = ",") )
+		if (nrow(AttackingCreature) > 0) {
+			print(str_c(AttackingCreature$Name, collapse = ",") )
+		} else {
+			cat("none\n")
+		}
 	}
 	
 	## 攻撃したクリーチャーをタップ状態にする。
@@ -1516,7 +1523,7 @@ MTG_RL_Attack <- function(Deck, Player, method, phase, lastAction, lastState, la
 		if (Opponent == 1) {
 			## 山デッキのブロックは、アクション選択の結果で決める。
 		
-			retList <- MTG_RL_getAction(Deck, lastState, lastAction, lastHP, method, phase, flgShowHistory)
+			retList <- MTG_RL_getAction(Deck, lastState, lastAction, reward, method, phase, flgShowHistory)
 			Deck <- retList[[1]]
 			action <- retList[[2]]
 			currentState <- retList[[3]]
@@ -1524,7 +1531,7 @@ MTG_RL_Attack <- function(Deck, Player, method, phase, lastAction, lastState, la
 			## アクション実施前の状態を保存しておく
 			lastAction <- action
 			lastState <- currentState
-			lastHP <- HP[2]
+			reward <- 0
 		}
 		
 		## 攻撃クリーチャーそれぞれについて
@@ -1590,14 +1597,19 @@ MTG_RL_Attack <- function(Deck, Player, method, phase, lastAction, lastState, la
 		## 残ったAttackingCreatureのパワー分だけ相手プレイヤーのHPを減らす
 		## 関数外の値を更新するので <を２つ入れる。
 		HP[Opponent] <<- HP[Opponent] - sum(AttackingCreature$Power)
+		
+		if (Player == 1) {
+			## 報酬(reward)を直接設定する。
+			reward <- reward + sum(AttackingCreature$Power) * 2
+		}
 	}
 
-	return(list(Deck, lastAction, lastState, lastHP))
+	return(list(Deck, lastAction, lastState, reward))
 }
 
 
 ## 前回のアクションを記録しつつ、アクションを決定する。
-MTG_RL_getAction <- function(Deck, lastState, lastAction, lastHP, method, phase, flgShowHistory = FALSE) {
+MTG_RL_getAction <- function(Deck, lastState, lastAction, reward, method, phase, flgShowHistory = FALSE) {
 
 	## 現在の状態(state)とアクションマスクを求める。
 	currentState <- MTG_state(Deck, phase)
@@ -1605,7 +1617,6 @@ MTG_RL_getAction <- function(Deck, lastState, lastAction, lastHP, method, phase,
 	
 	if (is.null(lastAction) == FALSE) {
 		## 前回のアクションの結果を記録する。
-		reward <- lastHP - HP[2]
 		if (nrow(ManaBattery) > 0) {
 			ManaBattery <<- rbind(ManaBattery, Urza(lastState, lastAction, currentState, reward) )
 		} else {
@@ -1618,7 +1629,7 @@ MTG_RL_getAction <- function(Deck, lastState, lastAction, lastHP, method, phase,
 		action <- MTG_RL_getRandomAction(ActionMask)
 	} else if (method == "Greedy") {
 		## 後でGreedyのアクション選択ロジックを追加する
-##		action <- MTG_RL_getGreedyAction(currentState, ActionMask)
+		action <- MTG_RL_getGreedyAction(currentState, ActionMask)
 	} else {
 	}
 	
@@ -1631,26 +1642,98 @@ MTG_RL_getAction <- function(Deck, lastState, lastAction, lastHP, method, phase,
 }
 
 
-## これで作成出来た貴重なManaBatteryを利用して強化学習する。
-
-## https://cran.r-project.org/web/packages/ReinforcementLearning/vignettes/ReinforcementLearning.html
-
-# Define reinforcement learning parameters
-control <- list(alpha = 0.2, gamma = 0.4, epsilon = 0.1)
-
-# Perform reinforcement learning
-model <- ReinforcementLearning(ManaBattery, s = "State", a = "Action", r = "Reward", 
-                               s_new = "NextState", iter = 20, control = control)
-
-# Calculate optimal policy
-pol <- computePolicy(model)
-
-# Print policy
-head(pol)
-
-table(pol)
 
 
+## 学習した結果に基づくアクションを返す。
+## state:
+## actionMask:
+## global environmentにmodelが作成されていること。
+MTG_RL_getGreedyAction <- function(state, ActionMask) {
+	
+##print(state)
+##print(ActionMask)
+	
+	if ( has.key(state, model$Q_hash) & (runif(1) > control$epsilon) ) {
+		## アクションマスク内のQ値が最大のアクションを返す
+		actionName <- names(model$Q_hash[[state]])
+		maskName <- ActionMask %>% dplyr::filter(Mask == TRUE) %>% select(ActionName)
+		
+		action <- names(which.max(values(model$Q_hash[[state]])[actionName %in% unlist(maskName)]))
+	} else {
+		## ランダムにアクションを選ぶ
+		action <- MTG_RL_getRandomAction(ActionMask)
+	}
+	
+	return(action)
+}
+
+
+## さらに大きな枠組みで、強化学習を行う。
+## method:greedy（Q学習のgreedy法）
+## loopCount:各学習のループ回数
+## iterationCount:反復回数
+EfficientConstruction <- function(method, loopCount, iterationCount) {
+	if ( !(method %in% c("GreedyGoblin")) ) { stop("アクション決定手段の指定が正しくありません") }
+	
+	mbDir <- "c:/yanagawa/R/data/ManaBattery_random_"
+	
+	for (i in 1:iterationCount) {
+
+		if (is.null(model) ) { stop("学習モデルの構築が正常に行われませんでした。") }
+	
+		if (i > 1) {
+			## 途中の学習元データをファイルに保存する。
+			filename <- str_c(mbDir, i, ".dat")
+			save(ManaBattery, file = filename)
+		}
+	
+		## 学習用のデータは、毎回初期化する。
+		ManaBattery <<- data.frame(State = NULL, Action = NULL, NextState = NULL, Reward = NULL)
+
+		## 千本ノックする
+		TotalResult[[i]] <<- AccumulateKnowledge(loopCount, 1, method, FALSE)
+
+		cat(i)
+		cat("回目:勝利数")
+		cat( sum(TotalResult[[i]]$WinPlayer == 1) )
+		cat("\n")
+	
+		if (i > 1) {
+			## 前回の勝利数を下回っていたら、中断
+			if (sum(TotalResult[[i]]$WinPlayer == 1) < sum(TotalResult[[i-1]]$WinPlayer == 1) ) {
+				break()
+			}
+		}
+		
+		if (method == "GreedyGoblin") {
+			## ReinforceLearninパッケージで、Q学習を行う。
+			## モデルは毎回再構築する。
+			model <<- NULL
+			model <<- ReinforcementLearning(ManaBattery, s = "State", a = "Action", r = "Reward", s_new = "NextState", iter = 20, control = control)
+		}
+	
+	}
+		
+	return(TRUE)
+}
+
+## ２回目以降は保存してあるマナバッテリーを使う。
+##load("c:/yanagawa/R/data/ManaBattery_random.dat")
+##load("c:/yanagawa/R/data/model_random.dat")
+
+
+## ReinforceLearninパッケージで、Q学習を行う。
+control <- list(alpha = 0.2, gamma = 0.9, epsilon = 0.1)
+model <- ReinforcementLearning(ManaBattery, s = "State", a = "Action", r = "Reward", s_new = "NextState", iter = 20, control = control)
+
+## 作成した初回のモデルも保存しておく。
+save(model, file="c:/yanagawa/R/data/model_random.dat")
+
+TotalResult <- list()
+
+save(TotalResult, file="c:/yanagawa/R/data/TotalResult_EC.dat")
+
+##load("c:/yanagawa/R/data/TotalResult_EC.dat")
 
 
 
@@ -1687,12 +1770,12 @@ Result <- MentalNote(1, TRUE, FALSE)
 
 TotalResult <- AccumulateKnowledge(1000, 1, "MentalNote", FALSE)
 
-save(TotalResult, file="c:/yanagawa/R/TotalResult.dat")
+save(TotalResult, file="c:/yanagawa/R/data/TotalResult.dat")
 
-load("c:/yanagawa/R/TotalResult.dat")
+load("c:/yanagawa/R/data/TotalResult.dat")
 
 TotalResult_wBlock <- TotalResult
-save(TotalResult_wBlock, file="c:/yanagawa/R/TotalResult_wBlock.dat")
+save(TotalResult_wBlock, file="c:/yanagawa/R/data/TotalResult_wBlock.dat")
 
 ## 結果を確認してみる。
 table(TotalResult$WinPlayer)
@@ -1736,6 +1819,18 @@ TimeVault <- TimeVault %>%
 TimeVault %>% arrange(desc(processTime) )
 
 
+## TurnAttackとTurnPlaySpellが遅い
+## forループを使っている為なので、それはやめた。
+## MTG_Init内でDeckとCardsを一回だけinner_joinするように変更した。
+
+
+
+## マリガン(意外と勝敗に関係なかった。あと、乱数固定してあるからマリガン処理入れてもおそらく同じ結果になる。)
+TotalResult %>% filter(WinPlayer == 2)
+
+MentalNote(603, TRUE)
+
+
 
 
 ## SetCardLibraryTop Test
@@ -1769,12 +1864,61 @@ Result <- GoblinLore("Random", 1, TRUE)
 
 RandomResult <- AccumulateKnowledge(1000, 1, "GoblinLore")
 
-save(ManaBattery, file="c:/yanagawa/R/ManaBattery_random.dat")
+table(RandomResult$WinPlayer)
 
-load("c:/yanagawa/R/ManaBattery_random.dat")
+   1   2 
+ 825 175 
+
+## passも３分の１へ変更
+  0   1   2 
+  4 214 782 
+
+save(ManaBattery, file="c:/yanagawa/R/data/ManaBattery_random.dat")
+
+load("c:/yanagawa/R/data/ManaBattery_random.dat")
+
+table(RandomResult$WinPlayer)
+
+
+  0   1   2 
+194   1 805 
 
 Result <- GoblinLore("Greedy", 1, TRUE)
 
 GreedyResult <- AccumulateKnowledge(1000, 1, "GreedyGoblin")
 
 
+## これで作成出来た貴重なManaBatteryを利用して強化学習する。
+
+## https://cran.r-project.org/web/packages/ReinforcementLearning/vignettes/ReinforcementLearning.html
+
+# Define reinforcement learning parameters
+control <- list(alpha = 0.2, gamma = 0.4, epsilon = 0.1)
+
+# Perform reinforcement learning
+model <- ReinforcementLearning(ManaBattery, s = "State", a = "Action", r = "Reward", 
+                               s_new = "NextState", iter = 20, control = control)
+
+# Calculate optimal policy
+pol <- computePolicy(model)
+
+# Print policy
+head(pol)
+
+table(pol)
+
+pol
+  L   P   S 
+169   9 488 
+
+## passも３分の１へ変更
+pol
+   L    P    S 
+1182  194 1197 
+
+predict(model, data_unseen#state)
+
+
+## EfficientConstruction Test
+
+EfficientConstruction("GreedyGoblin", 1000, 10)
