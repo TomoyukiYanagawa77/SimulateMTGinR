@@ -1,7 +1,23 @@
 ## RでMagic:the Gatheringのゲームを再現する試み
 
+## Google Colaboratory環境で必要となるライブラリや定数を設定する。
+install.packages("tensorflow")
+install.packages("keras")
+library(tensorflow)
+library(keras)
+
+filePathCard <- "./Cards.txt"
+
+
+## ローカル環境で必要となるライブラリや定数を設定する。
 library(tidymodels)
 library(tidyverse)
+library(reticulate)
+library(tensorflow)
+library(keras)
+reticulate::py_config()
+filePathCard <- "C:/Yanagawa/R/Cards.txt"
+
 
 ## 定数定義
 c_DECK_CARD_COUNT <- 60 ## 各デッキの枚数
@@ -19,28 +35,14 @@ c_CARD_STATUS_EXALED <- "e"		## 追放された
 c_CARD_STATUS_ORDER <- c(c_CARD_STATUS_HAND, c_CARD_STATUS_BA_UNTAP, c_CARD_STATUS_BA_SS, c_CARD_STATUS_BA_TAP, c_CARD_STATUS_GRAVEYARD, c_CARD_STATUS_EXALED, c_CARD_STATUS_LIBRARY)
 
 
-## Simple Deck
-## Deck1: 山 20: 稲妻 40
-## Deck2: 森 20: 熊 40
-
 ## 配列の定義
-## 両プレイヤーのデッキ。とりあえず60枚固定。
-## Cardがカードの種類
-## 2020.12.23 DeckRowを追加
-## 2021.02.02 カードのステータスを定数に変更
-Deck <- tibble(
-	DeckRow = c(1:(c_DECK_CARD_COUNT * 2)),
-	PlayerId = c(rep(1, c_DECK_CARD_COUNT), rep(2, c_DECK_CARD_COUNT)),
-	Card = c(rep(0, (c_DECK_CARD_COUNT * 2))),
-	Status = c(rep(c_CARD_STATUS_LIBRARY, (c_DECK_CARD_COUNT * 2)))
-)
 
 ## HPとマナ
 HP <- c(20,20)
 Mana <- c(0, 0)
 
 
-#### カード定義（そのうち外部ファイルにする）
+#### カード定義
 ##Cards <- tibble(
 ##	Id = c(1, 2, 101, 102),
 ##	Name = c("山", "森", "稲妻", "熊"),
@@ -50,7 +52,7 @@ Mana <- c(0, 0)
 ##	Toughness = c(0, 0, 0, 2)
 ##)
 Cards <- readr::read_csv(
-	"C:/Yanagawa/R/Cards.txt", locale = locale(encoding = "UTF-8"), 
+	filePathCard, locale = locale(encoding = "UTF-8"), 
 		skip = 1,
 		col_names = c("Id","Name","Type","ManaCost","Power","Toughness"),
 		col_types = cols(
@@ -73,6 +75,10 @@ DeckOnBottom <- list(list(), list())
 ## 2020.12.23 DeckOnTopとDeckOnBottomの初期化を追加。
 MTG_Init <- function() {
 
+	## 両プレイヤーのデッキ。
+	## Cardがカードの種類
+	## 2020.12.23 DeckRowを追加
+	## 2021.02.02 カードのステータスを定数に変更
 	Deck <- tibble(
 		DeckRow = c(1:(c_DECK_CARD_COUNT * 2)),
 		PlayerId = c(rep(1, c_DECK_CARD_COUNT), rep(2, c_DECK_CARD_COUNT)),
@@ -1922,3 +1928,4 @@ predict(model, data_unseen#state)
 ## EfficientConstruction Test
 
 EfficientConstruction("GreedyGoblin", 1000, 10)
+
