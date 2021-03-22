@@ -6,7 +6,7 @@ install.packages("keras")
 library(tensorflow)
 library(keras)
 
-filePathCard <- "./Cards.txt"
+workDir <- "./"
 
 
 ## ローカル環境で必要となるライブラリや定数を設定する。
@@ -16,11 +16,13 @@ library(reticulate)
 library(tensorflow)
 library(keras)
 reticulate::py_config()
-filePathCard <- "C:/Yanagawa/R/Cards.txt"
+workDir <- "C:/Yanagawa/R/"
 
 
 ## 定数定義
 c_DECK_CARD_COUNT <- 60 ## 各デッキの枚数
+c_CARD_STATUS_COUNT <- 7 ## カードの状態の数
+c_ACTION_COUNT <- 17 ## アクションの数
 
 ## 各カードの状態を定義する。
 c_CARD_STATUS_LIBRARY <- "d"	## ライブラリ内にある
@@ -52,7 +54,7 @@ Mana <- c(0, 0)
 ##	Toughness = c(0, 0, 0, 2)
 ##)
 Cards <- readr::read_csv(
-	filePathCard, locale = locale(encoding = "UTF-8"), 
+	str_c(workDir, "Cards.txt"), locale = locale(encoding = "UTF-8"), 
 		skip = 1,
 		col_names = c("Id","Name","Type","ManaCost","Power","Toughness"),
 		col_types = cols(
@@ -570,7 +572,7 @@ MentalNote <- function(RandomSeed = 0, flgShowHistory = FALSE, flgDoMulligan = T
 AccumulateKnowledge <- function(LoopCount, StartSeed, runMethod = "MentalNote", flgDoMulligan = TRUE) {
 	## 引数のエラー処理
 	if (LoopCount < 1) { stop("試行回数は1以上を指定してください。") }
-	if (runMethod %in% c("MentalNote", "GoblinLore", "GreedyGoblin") == FALSE) { stop("シミュレート手段の指定が正しくありません") }
+	if (runMethod %in% c("MentalNote", "GoblinLore", "GreedyGoblin", "DQN") == FALSE) { stop("シミュレート手段の指定が正しくありません") }
 
 	StartTime = Sys.time()
 	print(StartTime)
@@ -583,6 +585,8 @@ AccumulateKnowledge <- function(LoopCount, StartSeed, runMethod = "MentalNote", 
 			Result <- GoblinLore("Random", StartSeed + i - 1, FALSE)
 		} else if (runMethod == "GreedyGoblin") {
 			Result <- GoblinLore("Greedy", StartSeed + i - 1, FALSE)
+		} else if (runMethod == "DQN") {
+			Result <- GoblinLore("DQN", StartSeed + i - 1, FALSE)
 		}
 		if ( i == 1 ) {
 			TotalResult <- Result
@@ -1049,7 +1053,7 @@ library(hash)
 ## 強化学習方針　終わり
 
 ## ReinforcementLearningで、使用する学習用データ
-ManaBattery <- data.frame(State = NULL, Action = NULL, NextState = NULL, Reward = NULL)
+##ManaBattery <- data.frame(State = NULL, Action = NULL, NextState = NULL, Reward = NULL)
 
 Q_Mask <- hash()
 
@@ -1097,13 +1101,13 @@ MTG_state <- function(Deck, Phase) {
 }
 
 ## アクションマスクを作る。
-MTG_ActionMask <- function(Deck, state, Phase) {
+MTG_ActionMask <- function(Deck, Phase) {
 	## 引数のエラー処理
 	if (!(Phase %in% c('A', 'D', 'M')) ) {stop("フェイズの指定が正しくありません")}
 
 	## すべてFALSEで初期化する。
 	ActionName <- c('P', 'A1', 'A2', 'A3', 'D1', 'D2', 'D3', 'M1', 'M2', 'M3', 'M4', 'M5', 'M6', 'M7', 'M8', 'M9', 'M10')
-	Mask <- rep(FALSE, 17)
+	Mask <- rep(FALSE, c_ACTION_COUNT)
 	ActionMask <- as_tibble(data.frame(ActionName, Mask) )
 
 	## パスは常に選択可能	
@@ -1116,47 +1120,44 @@ MTG_ActionMask <- function(Deck, state, Phase) {
 		## ブロックフェイズは、ブロックの3アクションのみTRUE
 		ActionMask$Mask[5:7] <- TRUE
 	} else if (Phase == 'M') {
-		## メインフェイズのstateが既にQ_Maskに存在したら、そのActionMaskを返す。
-		if (has.key(state, Q_Mask) ) {
-			ActionMask <- Q_Mask[[state]]
+		## 手札と、対戦相手の場にいる生物で取れるアクションが変わる。
+		Hand <- dplyr::filter(Deck, (PlayerId == 1 & Type != "Land" & Status == c_CARD_STATUS_HAND ) )
+		OpponentCreature <- dplyr::filter(Deck, (PlayerId == 2 & Type == "Creature" & Status %in% c(c_CARD_STATUS_BA_UNTAP, c_CARD_STATUS_BA_TAP, c_CARD_STATUS_BA_SS)) )
+		if (nrow(OpponentCreature) > 0 ) {
+			OpponentCreature <- c(0, OpponentCreature$Card)
 		} else {
-			## Q_Maskに存在しなかったらアクションマスクを作る。
-			## 手札と、対戦相手の場にいる生物で取れるアクションが変わる。
-			Hand <- dplyr::filter(Deck, (PlayerId == 1 & Type != "Land" & Status == c_CARD_STATUS_HAND ) )
-			OpponentCreature <- dplyr::filter(Deck, (PlayerId == 2 & Type == "Creature" & Status %in% c(c_CARD_STATUS_BA_UNTAP, c_CARD_STATUS_BA_TAP, c_CARD_STATUS_BA_SS)) )
-			if (nrow(OpponentCreature) > 0 ) {
-				OpponentCreature <- c(0, OpponentCreature$Card)
-			} else {
-				OpponentCreature <- c(0)
-			}
+			OpponentCreature <- c(0)
+		}
 
-			MainMask <- rbind(	c( 8,  11,  10,  12),
-								c( 9,  14,  13,  15),
-								c(16,NULL,NULL,NULL),
-								c(17,NULL,NULL,NULL) )
+		MainMask <- rbind(	c( 8,  11,  10,  12),
+							c( 9,  14,  13,  15),
+							c(16,NULL,NULL,NULL),
+							c(17,NULL,NULL,NULL) )
 
-			col_num <- which(c(0, 4, 8, 9) %in% OpponentCreature)
-			row_num <- which(c(3, 7, 5 ,6) %in% Hand$Card)
+		col_num <- which(c(0, 4, 8, 9) %in% OpponentCreature)
+		row_num <- which(c(3, 7, 5 ,6) %in% Hand$Card)
 
-			action_num <- MainMask[row_num, col_num]
-			ActionMask$Mask[action_num] <- TRUE
-			if (Mana[1] < 2) {
-				## 使用可能マナ数以下のアクションを使用不可にする。
-				ActionMask$Mask[17] <- FALSE
-			}
-			## 作成したアクションマスクをQ_Maskに登録する。
-			Q_Mask[[state]] <- ActionMask
+		action_num <- MainMask[row_num, col_num]
+		ActionMask$Mask[action_num] <- TRUE
+		if (Mana[1] < 2) {
+			## 使用可能マナ数以下のアクションを使用不可にする。
+			ActionMask$Mask[17] <- FALSE
 		}
 	}
 
 	return(ActionMask)
 }
 
+## マナバッテリにレコードを追加する。
 Urza <- function( state, action, nextState, reward ) {
 
-	ManaBattery <- data.frame(State = state, Action = action, NextState = nextState, Reward = reward)
+	if ( exists(ManaBattery) ) {
+		ManaBattery <<- rbind(ManaBattery, data.frame(State = state, Action = action, NextState = nextState, Reward = reward) )
+	} else {
+		ManaBattery <<- data.frame(State = state, Action = action, NextState = nextState, Reward = reward)
+	}
 
-	return (ManaBattery)
+	return (TRUE)
 }
 
 ## ランダムなアクション選択方式
@@ -1171,7 +1172,7 @@ MTG_RL_getRandomAction <- function(ActionMask) {
 ## MentalNoteとほぼ同じだけど、用途が違うので別の名前にしておく。
 ## method: Random, GreedyGoblin
 GoblinLore <- function(method, RandomSeed = 0, flgShowHistory = FALSE) {
-	if ( !(method %in% c("Random", "Greedy")) ) { stop("アクション決定手段の指定が正しくありません") }
+	if ( !(method %in% c("Random", "Greedy", "DQN")) ) { stop("アクション決定手段の指定が正しくありません") }
 
 	## デッキを準備する。
 	Deck <- MTG_Init()
@@ -1401,8 +1402,14 @@ GoblinLore <- function(method, RandomSeed = 0, flgShowHistory = FALSE) {
 		print(reward)
 	}
 	
-	currentState <- MTG_state(Deck, phase)
-	ManaBattery <<- rbind(ManaBattery, Urza(lastState, lastAction, currentState, reward) )
+	if (method %in% c("Random", "Greedy") ) {
+		currentState <- MTG_state(Deck, phase)
+		Urza(lastState, lastAction, currentState, reward)
+	} else if (method == "DQN") {
+		currentState <- MTG_DQN_state(Deck, phase)
+		ActionMask <- MTG_ActionMask(Deck, phase)
+		Karn(lastState, lastAction, currentState, reward, ActionMask)
+	}
 
 	## ゲームを記録して終了。
 	if (WinPlayer != 0) {
@@ -1617,16 +1624,24 @@ MTG_RL_Attack <- function(Deck, Player, method, phase, lastAction, lastState, re
 ## 前回のアクションを記録しつつ、アクションを決定する。
 MTG_RL_getAction <- function(Deck, lastState, lastAction, reward, method, phase, flgShowHistory = FALSE) {
 
-	## 現在の状態(state)とアクションマスクを求める。
-	currentState <- MTG_state(Deck, phase)
-	ActionMask <- MTG_ActionMask(Deck, currentState, phase)
-	
-	if (is.null(lastAction) == FALSE) {
-		## 前回のアクションの結果を記録する。
-		if (nrow(ManaBattery) > 0) {
-			ManaBattery <<- rbind(ManaBattery, Urza(lastState, lastAction, currentState, reward) )
-		} else {
-			ManaBattery <<- Urza(lastState, lastAction, currentState, reward)
+	## アクションマスクを求める。
+	ActionMask <- MTG_ActionMask(Deck, phase)
+	if (method %in% c("Random", "Greedy") ) {
+		## 現在の状態(state)を求める。
+		currentState <- MTG_state(Deck, phase)
+		
+		if (is.null(lastAction) == FALSE) {
+			## 前回のアクションの結果を記録する。
+			Urza(lastState, lastAction, currentState, reward)
+		}
+		
+	} else if ( method == "DQN" ) {
+		## DQNでのstateを求める。
+		currentState <- MTG_DQN_state(Deck, phase)
+		
+		if (is.null(lastAction) == FALSE) {
+			## 前回のアクションの結果を記録する。
+			Karn(lastState, lastAction, currentState, reward, ActionMask)
 		}
 	}
 	
@@ -1636,7 +1651,8 @@ MTG_RL_getAction <- function(Deck, lastState, lastAction, reward, method, phase,
 	} else if (method == "Greedy") {
 		## 後でGreedyのアクション選択ロジックを追加する
 		action <- MTG_RL_getGreedyAction(currentState, ActionMask)
-	} else {
+	} else if ( method == "DQN" ) {
+		action <- MTG_DQN_getAction(currentState, ActionMask)
 	}
 	
 	if (flgShowHistory == TRUE) {
@@ -1673,29 +1689,207 @@ MTG_RL_getGreedyAction <- function(state, ActionMask) {
 	return(action)
 }
 
+## 学習用モデルを作る
+MTG_RL_Init <- function(method) {
+	if ( !(method %in% c("GreedyGoblin")) ) { stop("アクション決定手段の指定が正しくありません") }
+	
+	modelFile <- str_c(workDir, "data/model_random.dat"
+	
+	if (file.exists(modelFile) ) {
+		load(modelFile)
+	} else {
+		ManaBatteryFile <- str_c(workDir, "data/ManaBattery_random.dat")
+		if ( !file.exists(ManaBatteryFile) ) { stop ("学習用のランダムデータが存在しません。") }
+		load(ManaBatteryFile)
+
+		## ReinforceLearninパッケージで、Q学習を行う。
+		model <<- ReinforcementLearning(ManaBattery, s = "State", a = "Action", r = "Reward", s_new = "NextState", iter = 20, control = control)
+	}
+	control <<- list(alpha = 0.2, gamma = 0.9, epsilon = 0.1)
+	
+	return(TRUE)
+}
+
+
+
+## PowerStoneにレコードを追加する。
+Karn <- function( state, action, nextState, reward, ActionMask ) {
+
+	listLength <- 5
+	tempList <- vector(mode = "list", length = listLength)
+	names(tempList) <- c("state", "action", "nextState", "reward", "ActionMask")
+	tempList$state <- state
+	tempList$action <- action
+	tempList$nextState <- nextState
+	tempList$reward <- reward
+	tempList$ActionMask <- ActionMask$Mask
+	
+	if ( exists("PowerStone") ) {
+		PowerStone[length(PowerStone)+1] <<- tempList
+	} else {
+		PowerStone <<- tempList
+	}
+
+	return (TRUE)
+}
+
+## DQNで使用するゲームのstate(状態)を作る
+MTG_DQN_state <- function(Deck, Phase) {
+	## 引数のエラー処理
+	if (!(Phase %in% c("A", "D", "M")) ) {stop("フェイズの指定が正しくありません")}
+
+	## DQNのstateはc_DECK_CARD_COUNT * 2, c_CARD_STATUS_COUNTの2次元配列
+	state <- matrix( c(rep(0, c_DECK_CARD_COUNT * 2 * c_CARD_STATUS_COUNT)) , nrow = c_DECK_CARD_COUNT * 2, ncol =c_CARD_STATUS_COUNT )
+	
+	## デッキのカードステータスと同じところに1を立てる。
+	for (i in 1:c_CARD_STATUS_COUNT) {
+		state[Deck$Status == c_CARD_STATUS_ORDER[i], i] <-1
+	}
+
+	return(state)
+}
+
+
+## DQN環境のセットアップ
+## DQNで使用するネットワークや定数をリストとしてGlobalEnvironmentに作成する。
+MTG_DQN_Init <- function(method) {
+	if ( !(method %in% c("DQN")) ) { stop("アクション決定手段の指定が正しくありません") }
+	
+	DQN <<-list(NULL, NULL, NULL)
+	names(DQN) <<- c('Q_Network', 'TargetNetwork', 'control')
+
+	inputActionMask <- layer_input(shape = c( c_ACTION_COUNT ), name = "ActionMask")
+	
+	inputState <- layer_input(shape = c( c_DECK_CARD_COUNT * 2, c_CARD_STATUS_COUNT ) , name = "state") 
+	
+	outputState <- inputState %>%
+		layer_dense(units = 128, activation = 'relu') %>%
+		layer_dense(units = 128, activation = 'relu') %>%
+		layer_dense(units = c_ACTION_COUNT, activation = 'linear')
+	
+	outputAction <- layer_multiply(inputs = list(outputState, inputActionMask) )
+	
+	## Q値の代わりとなるDeepNetwork
+	DQN$Q_Network <<- keras_model(list(inputActionMask, inputState), outputAction) %>%
+		compile( optimizer = 'adam', loss = 'huber', metrics = c('accuracy') )
+	
+	## Q_Networkを一時保存しておくTargetNetowrkは、fitで更新しないけど、一応Q_networkと同じ値を入れておく。
+	DQN$TargetNetwork <<- keras_model(list(inputActionMask, inputState), outputAction) %>%
+		compile( optimizer = 'adam', loss = 'huber', metrics = c('accuracy') )
+		
+	control <- list(
+		epsilon = 1.0,
+		gamma = 0.9,
+		batchSize = 32
+	)
+	
+	DQN$control <<- control
+
+	return(TRUE)
+}
+
+## Pythonのkerasで定義されたhuberロスをRから呼び出すコード
+huber <- function(y_true, y_pred) {
+  keras$losses$huber(y_true, y_pred)
+}
+attr(huber, "py_function_name") <- "huber"
+
+
+## DQNモデルの学習
+
+MTG_DQN_Learn <- function (method) {
+	if ( !(method %in% c("DQN")) ) { stop("アクション決定手段の指定が正しくありません") }
+	if ( !exists("DQN") ) { stop("DQNモデルが作成されていません。") }
+	if ( !exists("PowerStone") ) { stop("学習データ(PowerStone)がありません。") }
+
+	## Q_NetworkをTargetNetworkにコピー
+	keras::set_weights( DQN$TargetNetwork,  keras::get_weights(DQN$Q_Network))
+	
+	loopCount <- nrow(PowerStone) %/% DQN$control$batchSize
+	
+	for (i in 1:loopCount) {
+		## 学習データからMiniBatch分のデータを取得。
+		trainData <- sample(PowerStone, DQN$control$batchSize)
+	
+		## Q_NetworkからQ値を取得する。
+		outQ <- DQN$Q_Network$predict( trainData$state )
+	
+		## TargetNetworkから次のステータスのQ値を取得する。
+		targetQ <- DQN$TargetNetwork$predict( trainData$nextState )
+		## 最大のQ値を求める。
+		MaxQ <- lapply(targetQ, max)
+	
+		## Q値を算出する。
+		outQ[trainData$action] <- trainData$reward + (MaxQ * DQN$control$gamma)
+	
+		## Q_Networkを更新（学習）する
+		DQN$Q_Network %>% fit(state = trainData$state, ActionMask = trainData$ActionMask, outQ, epoch = 1, batch_size = DQN$control$batchSize)
+	}
+	
+	## 段々とイプシロンを小さくしていく。
+	epsilon <- DQN$control$epsilon
+	epsilon <- epsilon * 0.9
+	if (epsilon < 0.001) {
+		epsilon <- 0.001
+	}
+	DQN$control$epsilon <<- epsilon
+
+	return (TRUE)
+}
+
+
+## DQNの学習と学習結果に基づくアクションを返す。
+MTG_DQN_getAction <- function(state, ActionMask) {
+	if ( !exists("DQN") ) { stop("DQNモデルが作成されていません。") }
+
+	if ( runif(1) > DQN$control$epsilon ) {
+		## Q_NetworkからQ値を求める。
+		outQ <- DQN$Q_Network$predict( state , batch_size = 1)
+		
+		## アクションマスク内のQ値が最大のアクションを返す
+		mask <- ActionMask %>%
+			mutate(Q = outQ) %>%
+			dplyr::filter(Mask == TRUE)
+		action <- mask$ActionName[which.max(mask$Q)]
+	} else {
+		## ランダムにアクションを選ぶ
+		action <- MTG_RL_getRandomAction(ActionMask)
+	}
+	
+	return(action)
+}
 
 ## さらに大きな枠組みで、強化学習を行う。
 ## method:greedy（Q学習のgreedy法）
 ## loopCount:各学習のループ回数
 ## iterationCount:反復回数
 EfficientConstruction <- function(method, loopCount, iterationCount) {
-	if ( !(method %in% c("GreedyGoblin")) ) { stop("アクション決定手段の指定が正しくありません") }
+	if ( !(method %in% c("GreedyGoblin", "DQN")) ) { stop("アクション決定手段の指定が正しくありません") }
+
+	## 学習モデルを作る。	
+	if (method == "GreedyGoblin") {
+		MTG_RL_Init(method)
+	} else if (method == "DQN") {
+		MTG_DQN_Init(method)
+	}
 	
-	mbDir <- "c:/yanagawa/R/data/ManaBattery_random_"
+	TotalResult <- vector(mode = "list", length = iterationCount)
 	
 	for (i in 1:iterationCount) {
-
-		if (is.null(model) ) { stop("学習モデルの構築が正常に行われませんでした。") }
 	
-		if (i > 1) {
-			## 途中の学習元データをファイルに保存する。
-			filename <- str_c(mbDir, i, ".dat")
-			save(ManaBattery, file = filename)
+		if (method == "GreedyGoblin") {
+			if (is.null(model) ) { stop("学習モデルの構築が正常に行われませんでした。") }
+			if (i > 1) {
+				## 途中の学習元データをファイルに保存する。
+				filename <- str_c(workDir, "data/ManaBattery_random_", i, ".dat")
+				save(ManaBattery, file = filename)
+			}
+			## 学習用のデータは、毎回初期化する。
+			ManaBattery <<- data.frame(State = NULL, Action = NULL, NextState = NULL, Reward = NULL)
+
+		} else if (method == "DQN") {
 		}
-	
-		## 学習用のデータは、毎回初期化する。
-		ManaBattery <<- data.frame(State = NULL, Action = NULL, NextState = NULL, Reward = NULL)
-
+		
 		## 千本ノックする
 		TotalResult[[i]] <<- AccumulateKnowledge(loopCount, 1, method, FALSE)
 
@@ -1716,6 +1910,8 @@ EfficientConstruction <- function(method, loopCount, iterationCount) {
 			## モデルは毎回再構築する。
 			model <<- NULL
 			model <<- ReinforcementLearning(ManaBattery, s = "State", a = "Action", r = "Reward", s_new = "NextState", iter = 20, control = control)
+		} else if (method == "DQN") {
+			MTG_DQN_Learn(method)
 		}
 	
 	}
@@ -1929,3 +2125,4 @@ predict(model, data_unseen#state)
 
 EfficientConstruction("GreedyGoblin", 1000, 10)
 
+EfficientConstruction("DQN", 10, 10)
