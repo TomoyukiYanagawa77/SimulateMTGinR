@@ -1547,11 +1547,14 @@ MTG_RL_Attack <- function(Deck, Player, method, phase, lastAction, lastState, re
 			reward <- 0
 		}
 		
+		## OpponentCreatureのindex
+		j <- 1
+		
 		## 攻撃クリーチャーそれぞれについて
 		for (i in 1:nrow(AttackingCreature)) {
 			flgHasBlocked <- FALSE
 			## まだブロックするクリーチャーが残っている。
-			if (nrow(OpponentCreature) > 0) {
+			if (j <= nrow(OpponentCreature) ) {
 				if (Opponent == 1) {
 					## 山デッキのブロックアクション
 					switch ( action,
@@ -1560,13 +1563,13 @@ MTG_RL_Attack <- function(Deck, Player, method, phase, lastAction, lastState, re
 						},
 						"D1" = {
 							## 勝てる生物だけでブロック
-							if (AttackingCreature$Power[i] < OpponentCreature$Toughness[1]) {
+							if (AttackingCreature$Power[i] < OpponentCreature$Toughness[j]) {
 								flgHasBlocked <- TRUE
 							}
 						},
 						"D2" = {
 							## 相打ち出来る生物だけでブロック
-							if (AttackingCreature$Power[i] <= OpponentCreature$Toughness[1]) {
+							if (AttackingCreature$Power[i] <= OpponentCreature$Toughness[j]) {
 								flgHasBlocked <- TRUE
 							}
 						},,
@@ -1577,21 +1580,21 @@ MTG_RL_Attack <- function(Deck, Player, method, phase, lastAction, lastState, re
 					)
 				} else {
 					## 森デッキは相打ちでもブロックする。
-					if (AttackingCreature$Power[i] <= OpponentCreature$Toughness[1]) {
+					if (AttackingCreature$Power[i] <= OpponentCreature$Toughness[j]) {
 						flgHasBlocked <- TRUE
 					}
 				}
 				if (flgHasBlocked == TRUE) {
 					## ブロック成立
-					if (AttackingCreature$Power[i] >= OpponentCreature$Toughness[1] ) {
-						Deck$Status[OpponentCreature$DeckRow[1]] <- c_CARD_STATUS_GRAVEYARD
+					if (AttackingCreature$Power[i] >= OpponentCreature$Toughness[j] ) {
+						Deck$Status[OpponentCreature$DeckRow[j]] <- c_CARD_STATUS_GRAVEYARD
 					}
-					if (OpponentCreature$Power[1] >= AttackingCreature$Toughness[i] ) {
+					if (OpponentCreature$Power[j] >= AttackingCreature$Toughness[i] ) {
 						Deck$Status[AttackingCreature$DeckRow[i]] <- c_CARD_STATUS_GRAVEYARD
 						AttackingCreature$Status[i] <- c_CARD_STATUS_GRAVEYARD
 					}
 					## ブロックしたクリーチャーをプロッククリーチャーから取り除く
-					OpponentCreature[1] <- NULL
+					j <- j+1
 				}
 			}
 		}
@@ -1693,7 +1696,7 @@ MTG_RL_getGreedyAction <- function(state, ActionMask) {
 MTG_RL_Init <- function(method) {
 	if ( !(method %in% c("GreedyGoblin")) ) { stop("アクション決定手段の指定が正しくありません") }
 	
-	modelFile <- str_c(workDir, "data/model_random.dat"
+	modelFile <- str_c(workDir, "data/model_random.dat")
 	
 	if (file.exists(modelFile) ) {
 		load(modelFile)
@@ -1719,15 +1722,20 @@ Karn <- function( state, action, nextState, reward, ActionMask ) {
 	tempList <- vector(mode = "list", length = listLength)
 	names(tempList) <- c("state", "action", "nextState", "reward", "ActionMask")
 	tempList$state <- state
-	tempList$action <- action
+	## actionは数字に変換する
+	tempList$action <- which(ActionMask$ActionName == action)
 	tempList$nextState <- nextState
 	tempList$reward <- reward
-	tempList$ActionMask <- ActionMask$Mask
+	## ActionMaskは0と1に変更する。
+	tempMask <- rep(0, length(ActionMask$Mask))
+	tempMask[ActionMask$Mask] <- 1
+	tempList$ActionMask <- tempMask
 	
 	if ( exists("PowerStone") ) {
-		PowerStone[length(PowerStone)+1] <<- tempList
+		PowerStone[[length(PowerStone)+1]] <<- tempList
 	} else {
-		PowerStone <<- tempList
+		PowerStone <<- vector(mode = "list", length = 1)
+		PowerStone[[1]] <<- tempList
 	}
 
 	return (TRUE)
@@ -1763,6 +1771,7 @@ MTG_DQN_Init <- function(method) {
 	inputState <- layer_input(shape = c( c_DECK_CARD_COUNT * 2, c_CARD_STATUS_COUNT ) , name = "state") 
 	
 	outputState <- inputState %>%
+		layer_flatten() %>%
 		layer_dense(units = 128, activation = 'relu') %>%
 		layer_dense(units = 128, activation = 'relu') %>%
 		layer_dense(units = c_ACTION_COUNT, activation = 'linear')
@@ -1772,9 +1781,17 @@ MTG_DQN_Init <- function(method) {
 	## Q値の代わりとなるDeepNetwork
 	DQN$Q_Network <<- keras_model(list(inputActionMask, inputState), outputAction) %>%
 		compile( optimizer = 'adam', loss = 'huber', metrics = c('accuracy') )
+
+	outputState_target <- inputState %>%
+		layer_flatten() %>%
+		layer_dense(units = 128, activation = 'relu') %>%
+		layer_dense(units = 128, activation = 'relu') %>%
+		layer_dense(units = c_ACTION_COUNT, activation = 'linear')
+
+	outputAction_target <- layer_multiply(inputs = list(outputState_target, inputActionMask) )
 	
 	## Q_Networkを一時保存しておくTargetNetowrkは、fitで更新しないけど、一応Q_networkと同じ値を入れておく。
-	DQN$TargetNetwork <<- keras_model(list(inputActionMask, inputState), outputAction) %>%
+	DQN$TargetNetwork <<- keras_model(list(inputActionMask, inputState), outputAction_target) %>%
 		compile( optimizer = 'adam', loss = 'huber', metrics = c('accuracy') )
 		
 	control <- list(
@@ -1805,25 +1822,32 @@ MTG_DQN_Learn <- function (method) {
 	## Q_NetworkをTargetNetworkにコピー
 	keras::set_weights( DQN$TargetNetwork,  keras::get_weights(DQN$Q_Network))
 	
-	loopCount <- nrow(PowerStone) %/% DQN$control$batchSize
+	loopCount <- length(PowerStone) %/% DQN$control$batchSize
 	
 	for (i in 1:loopCount) {
 		## 学習データからMiniBatch分のデータを取得。
 		trainData <- sample(PowerStone, DQN$control$batchSize)
 	
-		## Q_NetworkからQ値を取得する。
-		outQ <- DQN$Q_Network$predict( trainData$state )
+		trainState <- array(sapply(trainData, '[[', 1), dim = c(DQN$control$batchSize, c_DECK_CARD_COUNT * 2, c_CARD_STATUS_COUNT) )
+		trainAction <- array(sapply(trainData, '[[', 2), dim = c(DQN$control$batchSize) )
+		trainNextState <- array(sapply(trainData, '[[', 3), dim = c(DQN$control$batchSize, c_DECK_CARD_COUNT * 2, c_CARD_STATUS_COUNT) )
+		trainReward <- array(sapply(trainData, '[[', 4), dim = c(DQN$control$batchSize) )
+		trainActionMask <- array(sapply(trainData, '[[', 5), dim = c(DQN$control$batchSize, c_ACTION_COUNT) )
+		
+		## Q_NetworkからQ値を取得する。		
+		outQ <- DQN$Q_Network %>% predict( list(state = trainState, ActionMask = trainActionMask), batch_size = DQN$control$batchSize )
 	
 		## TargetNetworkから次のステータスのQ値を取得する。
-		targetQ <- DQN$TargetNetwork$predict( trainData$nextState )
+		targetQ <- DQN$TargetNetwork %>% predict( list(state = trainNextState, ActionMask = trainActionMask), batch_size = DQN$control$batchSize )
+		
 		## 最大のQ値を求める。
-		MaxQ <- lapply(targetQ, max)
+		MaxQ <- apply(targetQ, 1, max)
 	
 		## Q値を算出する。
-		outQ[trainData$action] <- trainData$reward + (MaxQ * DQN$control$gamma)
+		outQ[trainAction] <- trainReward + (MaxQ * DQN$control$gamma)
 	
 		## Q_Networkを更新（学習）する
-		DQN$Q_Network %>% fit(state = trainData$state, ActionMask = trainData$ActionMask, outQ, epoch = 1, batch_size = DQN$control$batchSize)
+		DQN$Q_Network %>% fit(list(state = trainState, ActionMask = trainActionMask), outQ, epoch = 1, batch_size = DQN$control$batchSize)
 	}
 	
 	## 段々とイプシロンを小さくしていく。
@@ -1843,14 +1867,29 @@ MTG_DQN_getAction <- function(state, ActionMask) {
 	if ( !exists("DQN") ) { stop("DQNモデルが作成されていません。") }
 
 	if ( runif(1) > DQN$control$epsilon ) {
+	
+		## ActionMaskは0と1に変更する。
+		tempMask <- rep(0, length(ActionMask$Mask))
+		tempMask[ActionMask$Mask] <- 1
+
 		## Q_NetworkからQ値を求める。
-		outQ <- DQN$Q_Network$predict( state , batch_size = 1)
+		outQ <- DQN$Q_Network %>% predict( 
+			list(
+				state = array(state, dim = c(1, c_DECK_CARD_COUNT * 2, c_CARD_STATUS_COUNT)), 
+				ActionMask = array(tempMask, dim =c(1, c_ACTION_COUNT))
+			), 
+			batch_size = 1
+		)
 		
 		## アクションマスク内のQ値が最大のアクションを返す
 		mask <- ActionMask %>%
-			mutate(Q = outQ) %>%
+			mutate(Q = outQ[,1]) %>%
 			dplyr::filter(Mask == TRUE)
 		action <- mask$ActionName[which.max(mask$Q)]
+
+cat(str_c("predict Action:", action, "\n") )
+
+		if ( is.null(action) | is.na(action) ) { stop("正しいアクションが選択されませんでした。") }
 	} else {
 		## ランダムにアクションを選ぶ
 		action <- MTG_RL_getRandomAction(ActionMask)
@@ -1873,7 +1912,7 @@ EfficientConstruction <- function(method, loopCount, iterationCount) {
 		MTG_DQN_Init(method)
 	}
 	
-	TotalResult <- vector(mode = "list", length = iterationCount)
+	TotalResult <<- vector(mode = "list", length = iterationCount)
 	
 	for (i in 1:iterationCount) {
 	
@@ -2125,4 +2164,28 @@ predict(model, data_unseen#state)
 
 EfficientConstruction("GreedyGoblin", 1000, 10)
 
-EfficientConstruction("DQN", 10, 10)
+EfficientConstruction("DQN", 1000, 10)
+
+
+## DQNのテスト
+MTG_DQN_Init("DQN")
+
+summary(DQN$Q_Network)
+
+RandomDQN <- AccumulateKnowledge(100, 1, "DQN")
+
+save(PowerStone, file="c:/yanagawa/R/data/PowerStone_random.dat")
+load(file="c:/yanagawa/R/data/PowerStone_random.dat")
+
+Result <- GoblinLore("DQN", 1, TRUE)
+
+options(warn =2)
+
+
+## MTG_DQN_Learn Test
+MTG_DQN_Learn("DQN")
+
+
+
+save_model_hdf5(DQN$Q_Network, file="c:/yanagawa/R/data/Q_Network.model")
+save_model_hdf5(DQN$TargetNetwork, file="c:/yanagawa/R/data/TargetNetwork.model")
