@@ -22,7 +22,7 @@ workDir <- "C:/Yanagawa/R/"
 ## 定数定義
 c_DECK_CARD_COUNT <- 60 ## 各デッキの枚数
 c_CARD_STATUS_COUNT <- 7 ## カードの状態の数
-c_ACTION_COUNT <- 17 ## アクションの数
+c_ACTION_COUNT <- 19 ## アクションの数
 
 ## 各カードの状態を定義する。
 c_CARD_STATUS_LIBRARY <- "d"	## ライブラリ内にある
@@ -1106,20 +1106,19 @@ MTG_ActionMask <- function(Deck, Phase) {
 	if (!(Phase %in% c('A', 'D', 'M')) ) {stop("フェイズの指定が正しくありません")}
 
 	## すべてFALSEで初期化する。
-	ActionName <- c('P', 'A1', 'A2', 'A3', 'D1', 'D2', 'D3', 'M1', 'M2', 'M3', 'M4', 'M5', 'M6', 'M7', 'M8', 'M9', 'M10')
+	ActionName <- c('AP', 'A1', 'A2', 'A3', 'DP', 'D1', 'D2', 'D3', 'P', 'M1', 'M2', 'M3', 'M4', 'M5', 'M6', 'M7', 'M8', 'M9', 'M10')
 	Mask <- rep(FALSE, c_ACTION_COUNT)
 	ActionMask <- as_tibble(data.frame(ActionName, Mask) )
 
-	## パスは常に選択可能	
-	ActionMask$Mask[1] <- TRUE
-
 	if (Phase == 'A') {
 		## 攻撃フェイズは、攻撃の3アクションのみTRUE
-		ActionMask$Mask[2:4] <- TRUE
+		ActionMask$Mask[1:4] <- TRUE
 	} else if (Phase == 'D') {
 		## ブロックフェイズは、ブロックの3アクションのみTRUE
-		ActionMask$Mask[5:7] <- TRUE
+		ActionMask$Mask[5:8] <- TRUE
 	} else if (Phase == 'M') {
+		## パスは常に選択可能
+		ActionMask$Mask[9] <- TRUE
 		## 手札と、対戦相手の場にいる生物で取れるアクションが変わる。
 		Hand <- dplyr::filter(Deck, (PlayerId == 1 & Type != "Land" & Status == c_CARD_STATUS_HAND ) )
 		OpponentCreature <- dplyr::filter(Deck, (PlayerId == 2 & Type == "Creature" & Status %in% c(c_CARD_STATUS_BA_UNTAP, c_CARD_STATUS_BA_TAP, c_CARD_STATUS_BA_SS)) )
@@ -1129,10 +1128,10 @@ MTG_ActionMask <- function(Deck, Phase) {
 			OpponentCreature <- c(0)
 		}
 
-		MainMask <- rbind(	c( 8,  11,  10,  12),
-							c( 9,  14,  13,  15),
-							c(16,NULL,NULL,NULL),
-							c(17,NULL,NULL,NULL) )
+		MainMask <- rbind(	c(10,  13,  12,  14),
+							c(11,  16,  15,  17),
+							c(18,NULL,NULL,NULL),
+							c(19,NULL,NULL,NULL) )
 
 		col_num <- which(c(0, 4, 8, 9) %in% OpponentCreature)
 		row_num <- which(c(3, 7, 5 ,6) %in% Hand$Card)
@@ -1390,7 +1389,8 @@ GoblinLore <- function(method, RandomSeed = 0, flgShowHistory = FALSE) {
 		reward = 0
 	} else {
 		LosePlayer = 0
-		reward = 30
+##		reward = 30
+		reward = 0
 	}
 	
 	if (flgShowHistory == TRUE) {
@@ -1485,7 +1485,7 @@ MTG_RL_Attack <- function(Deck, Player, method, phase, lastAction, lastState, re
 		reward <- 0
 
 		switch ( action,
-			"P" = {
+			"AP" = {
 				## パスアクション（攻撃しない）
 				AttackingCreature <- dplyr::filter(MyCreature, Type == "NONE")
 			},
@@ -1558,7 +1558,7 @@ MTG_RL_Attack <- function(Deck, Player, method, phase, lastAction, lastState, re
 				if (Opponent == 1) {
 					## 山デッキのブロックアクション
 					switch ( action,
-						"P" = {
+						"DP" = {
 							## ブロックしない
 						},
 						"D1" = {
@@ -1772,9 +1772,8 @@ MTG_DQN_Init <- function(method) {
 	
 	outputState <- inputState %>%
 		layer_flatten() %>%
-		layer_dense(units = 128, activation = 'relu') %>%
-		layer_dense(units = 128, activation = 'relu') %>%
-		layer_dense(units = c_ACTION_COUNT, activation = 'linear')
+		layer_dense(units = 32, activation = 'relu', kernel_initializer = 'he_normal') %>%
+		layer_dense(units = c_ACTION_COUNT, activation = 'linear', kernel_initializer = 'he_normal')
 	
 	outputAction <- layer_multiply(inputs = list(outputState, inputActionMask) )
 	
@@ -1784,9 +1783,8 @@ MTG_DQN_Init <- function(method) {
 
 	outputState_target <- inputState %>%
 		layer_flatten() %>%
-		layer_dense(units = 128, activation = 'relu') %>%
-		layer_dense(units = 128, activation = 'relu') %>%
-		layer_dense(units = c_ACTION_COUNT, activation = 'linear')
+		layer_dense(units = 32, activation = 'relu', kernel_initializer = 'he_normal') %>%
+		layer_dense(units = c_ACTION_COUNT, activation = 'linear', kernel_initializer = 'he_normal')
 
 	outputAction_target <- layer_multiply(inputs = list(outputState_target, inputActionMask) )
 	
@@ -1797,7 +1795,8 @@ MTG_DQN_Init <- function(method) {
 	control <- list(
 		epsilon = 1.0,
 		gamma = 0.9,
-		batchSize = 32
+		batchSize = 32,
+		count = 1
 	)
 	
 	DQN$control <<- control
@@ -1819,44 +1818,39 @@ MTG_DQN_Learn <- function (method) {
 	if ( !exists("DQN") ) { stop("DQNモデルが作成されていません。") }
 	if ( !exists("PowerStone") ) { stop("学習データ(PowerStone)がありません。") }
 
-	## Q_NetworkをTargetNetworkにコピー
-	keras::set_weights( DQN$TargetNetwork,  keras::get_weights(DQN$Q_Network))
-	
-	loopCount <- length(PowerStone) %/% DQN$control$batchSize
-	
-	for (i in 1:loopCount) {
-		## 学習データからMiniBatch分のデータを取得。
-		trainData <- sample(PowerStone, DQN$control$batchSize)
-	
-		trainState <- array(sapply(trainData, '[[', 1), dim = c(DQN$control$batchSize, c_DECK_CARD_COUNT * 2, c_CARD_STATUS_COUNT) )
-		trainAction <- array(sapply(trainData, '[[', 2), dim = c(DQN$control$batchSize) )
-		trainNextState <- array(sapply(trainData, '[[', 3), dim = c(DQN$control$batchSize, c_DECK_CARD_COUNT * 2, c_CARD_STATUS_COUNT) )
-		trainReward <- array(sapply(trainData, '[[', 4), dim = c(DQN$control$batchSize) )
-		trainActionMask <- array(sapply(trainData, '[[', 5), dim = c(DQN$control$batchSize, c_ACTION_COUNT) )
-		
-		## Q_NetworkからQ値を取得する。		
-		outQ <- DQN$Q_Network %>% predict( list(state = trainState, ActionMask = trainActionMask), batch_size = DQN$control$batchSize )
-	
-		## TargetNetworkから次のステータスのQ値を取得する。
-		targetQ <- DQN$TargetNetwork %>% predict( list(state = trainNextState, ActionMask = trainActionMask), batch_size = DQN$control$batchSize )
-		
-		## 最大のQ値を求める。
-		MaxQ <- apply(targetQ, 1, max)
-	
-		## Q値を算出する。
-		outQ[trainAction] <- trainReward + (MaxQ * DQN$control$gamma)
-	
-		## Q_Networkを更新（学習）する
-		DQN$Q_Network %>% fit(list(state = trainState, ActionMask = trainActionMask), outQ, epoch = 1, batch_size = DQN$control$batchSize)
+	if (DQN$control$count %% 1000 == 0) {
+		## Q_NetworkをTargetNetworkにコピー
+		keras::set_weights( DQN$TargetNetwork,  keras::get_weights(DQN$Q_Network))
 	}
 	
-	## 段々とイプシロンを小さくしていく。
-	epsilon <- DQN$control$epsilon
-	epsilon <- epsilon * 0.9
-	if (epsilon < 0.001) {
-		epsilon <- 0.001
-	}
-	DQN$control$epsilon <<- epsilon
+	## 学習データからMiniBatch分のデータを取得。
+	trainData <- sample(PowerStone, DQN$control$batchSize)
+
+	trainState <- array(sapply(trainData, '[[', 1), dim = c(DQN$control$batchSize, c_DECK_CARD_COUNT * 2, c_CARD_STATUS_COUNT) )
+	trainAction <- array(sapply(trainData, '[[', 2), dim = c(DQN$control$batchSize) )
+	trainNextState <- array(sapply(trainData, '[[', 3), dim = c(DQN$control$batchSize, c_DECK_CARD_COUNT * 2, c_CARD_STATUS_COUNT) )
+	trainReward <- array(sapply(trainData, '[[', 4), dim = c(DQN$control$batchSize) )
+	trainActionMask <- array(sapply(trainData, '[[', 5), dim = c(DQN$control$batchSize, c_ACTION_COUNT) )
+	
+	## reward clipping
+	trainReward <- sign(trainReward)
+	
+	## Q_NetworkからQ値を取得する。
+	outQ <- DQN$Q_Network %>% predict( list(state = trainState, ActionMask = trainActionMask), batch_size = DQN$control$batchSize )
+
+	## TargetNetworkから次のステータスのQ値を取得する。
+	targetQ <- DQN$TargetNetwork %>% predict( list(state = trainNextState, ActionMask = trainActionMask), batch_size = DQN$control$batchSize )
+	
+	## 最大のQ値を求める。
+	MaxQ <- apply(targetQ, 1, max)
+
+	## Q値を算出する。
+	outQ[trainAction] <- trainReward + (MaxQ * DQN$control$gamma)
+
+	## Q_Networkを更新（学習）する
+	DQN$Q_Network %>% fit(list(state = trainState, ActionMask = trainActionMask), outQ, epoch = 1, batch_size = DQN$control$batchSize)
+	
+	DQN$control$count <<- DQN$control$count + 1
 
 	return (TRUE)
 }
@@ -1895,6 +1889,21 @@ cat(str_c("predict Action:", action, "\n") )
 		action <- MTG_RL_getRandomAction(ActionMask)
 	}
 	
+	## データが一定数溜まったら、DeepNetworkの学習を開始する。
+	if ( exists("PowerStone") ) {
+		if (length(PowerStone) > 32 * 320) {
+			MTG_DQN_Learn("DQN")
+
+			## 段々とイプシロンを小さくしていく。
+			epsilon <- DQN$control$epsilon
+			epsilon <- epsilon - 0.00001
+			if (epsilon < 0.01) {
+				epsilon <- 0.01
+			}
+			DQN$control$epsilon <<- epsilon
+		}
+	}
+	
 	return(action)
 }
 
@@ -1927,6 +1936,18 @@ EfficientConstruction <- function(method, loopCount, iterationCount) {
 			ManaBattery <<- data.frame(State = NULL, Action = NULL, NextState = NULL, Reward = NULL)
 
 		} else if (method == "DQN") {
+			if (is.null(DQN) ) { stop("学習モデルの構築が正常に行われませんでした。") }
+			
+			if ( exists("PowerStone") ) {
+				PSLength <- length(PowerStone)
+				if (PSLength >= 100000) {
+					PowerStone_back <- PowerStone[[1:20000]]
+					PowerStone <<- PowerStone[[20001:PSLength]]
+					filename <- str_c(workDir, "data/PowerStone_back_", PSLength, ".dat")
+					save(PowerStone_back, filename)
+print(filename)
+				}
+			}
 		}
 		
 		## 千本ノックする
@@ -1958,21 +1979,73 @@ EfficientConstruction <- function(method, loopCount, iterationCount) {
 	return(TRUE)
 }
 
+## Q_Networkの中身を調べるためのコード
+Q_Network <- load_model_hdf5(file="c:/yanagawa/R/data/Q_Network.model")
+
+##w <- keras::get_weights(Q_Network)
+
+## 確認用のDeckのstateとActionMaskを作る。
+Deck <- MTG_Init()
+Deck <- MTG_Draw(Deck, 1, 7)
+Deck <- MTG_Draw(Deck, 2, 7)
+Deck <- MTG_SetLand(Deck, 1)
+
+phase <- 'M'
+ActionMask <- MTG_ActionMask(Deck, phase)
+currentState <- MTG_DQN_state(Deck, phase)
+
+## MTG_DQN_getAction内のコードを１行ずつ検証する。
+tempMask <- rep(0, length(ActionMask$Mask))
+tempMask[ActionMask$Mask] <- 1
+
+outQ <- Q_Network %>% predict( 
+	list(
+		state = array(currentState, dim = c(1, c_DECK_CARD_COUNT * 2, c_CARD_STATUS_COUNT)), 
+		ActionMask = array(tempMask, dim =c(1, c_ACTION_COUNT))
+	), 
+	batch_size = 1
+)
+> outQ
+           [,1] [,2] [,3] [,4] [,5] [,6] [,7]        [,8]         [,9] [,10] [,11] [,12] [,13]
+[1,] 0.07031677    0    0    0    0    0    0 0.001981257 0.0008113208     0     0     0     0
+     [,14] [,15]        [,16] [,17]
+[1,]     0     0 -0.001168048     0
+
+
+
+## 以下は、『RとKerasによるディープラーニング』のP.164からのコードのパクり。
+
+## 全部の値に1を入れたテスト用のstateを用意する
+currentState = array(rep(1, c_DECK_CARD_COUNT * 2 * c_CARD_STATUS_COUNT), dim = c(1, c_DECK_CARD_COUNT * 2, c_CARD_STATUS_COUNT))
+tempMask = array(rep(1, c_ACTION_COUNT), dim =c(1, c_ACTION_COUNT))
+
+testLayerOutput <- lapply(Q_Network$layers[1:6], function(layer) layer$output)
+activationModel <- keras_model(inputs = Q_Network$input, outputs = testLayerOutput)
+
+activations <- activationModel %>% predict( list(state = currentState, ActionMask = tempMask) )
+
+
+
+
+
+
+
+
 ## ２回目以降は保存してあるマナバッテリーを使う。
 ##load("c:/yanagawa/R/data/ManaBattery_random.dat")
 ##load("c:/yanagawa/R/data/model_random.dat")
 
 
 ## ReinforceLearninパッケージで、Q学習を行う。
-control <- list(alpha = 0.2, gamma = 0.9, epsilon = 0.1)
-model <- ReinforcementLearning(ManaBattery, s = "State", a = "Action", r = "Reward", s_new = "NextState", iter = 20, control = control)
+##control <- list(alpha = 0.2, gamma = 0.9, epsilon = 0.1)
+##model <- ReinforcementLearning(ManaBattery, s = "State", a = "Action", r = "Reward", s_new = "NextState", iter = 20, control = control)
 
 ## 作成した初回のモデルも保存しておく。
-save(model, file="c:/yanagawa/R/data/model_random.dat")
+##save(model, file="c:/yanagawa/R/data/model_random.dat")
 
-TotalResult <- list()
+##TotalResult <- list()
 
-save(TotalResult, file="c:/yanagawa/R/data/TotalResult_EC.dat")
+##save(TotalResult, file="c:/yanagawa/R/data/TotalResult_EC.dat")
 
 ##load("c:/yanagawa/R/data/TotalResult_EC.dat")
 
@@ -2189,3 +2262,6 @@ MTG_DQN_Learn("DQN")
 
 save_model_hdf5(DQN$Q_Network, file="c:/yanagawa/R/data/Q_Network.model")
 save_model_hdf5(DQN$TargetNetwork, file="c:/yanagawa/R/data/TargetNetwork.model")
+
+
+
