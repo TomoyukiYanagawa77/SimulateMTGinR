@@ -2013,23 +2013,6 @@ outQ <- Q_Network %>% predict(
 
 
 
-## 以下は、『RとKerasによるディープラーニング』のP.164からのコードのパクり。
-
-## 全部の値に1を入れたテスト用のstateを用意する
-currentState = array(rep(1, c_DECK_CARD_COUNT * 2 * c_CARD_STATUS_COUNT), dim = c(1, c_DECK_CARD_COUNT * 2, c_CARD_STATUS_COUNT))
-tempMask = array(rep(1, c_ACTION_COUNT), dim =c(1, c_ACTION_COUNT))
-
-testLayerOutput <- lapply(Q_Network$layers[1:6], function(layer) layer$output)
-activationModel <- keras_model(inputs = Q_Network$input, outputs = testLayerOutput)
-
-activations <- activationModel %>% predict( list(state = currentState, ActionMask = tempMask) )
-
-
-
-
-
-
-
 
 ## ２回目以降は保存してあるマナバッテリーを使う。
 ##load("c:/yanagawa/R/data/ManaBattery_random.dat")
