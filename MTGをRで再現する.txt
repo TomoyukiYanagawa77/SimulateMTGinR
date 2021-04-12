@@ -1772,25 +1772,29 @@ MTG_DQN_Init <- function(method) {
 	
 	outputState <- inputState %>%
 		layer_flatten() %>%
-		layer_dense(units = 32, activation = 'relu', kernel_initializer = 'he_normal') %>%
+		layer_dense(units = 128, activation = 'relu', kernel_initializer = 'he_normal') %>%
+		layer_dense(units = 128, activation = 'relu', kernel_initializer = 'he_normal') %>%
 		layer_dense(units = c_ACTION_COUNT, activation = 'linear', kernel_initializer = 'he_normal')
 	
 	outputAction <- layer_multiply(inputs = list(outputState, inputActionMask) )
 	
 	## Q値の代わりとなるDeepNetwork
+##	DQN$Q_Network <<- keras_model(list(inputActionMask, inputState), outputAction) %>%
+##		compile( optimizer = 'adam', loss = 'huber', metrics = c('accuracy') )
 	DQN$Q_Network <<- keras_model(list(inputActionMask, inputState), outputAction) %>%
-		compile( optimizer = 'adam', loss = 'huber', metrics = c('accuracy') )
+		compile( optimizer = 'adam', loss = 'huber' )
 
 	outputState_target <- inputState %>%
 		layer_flatten() %>%
-		layer_dense(units = 32, activation = 'relu', kernel_initializer = 'he_normal') %>%
+		layer_dense(units = 128, activation = 'relu', kernel_initializer = 'he_normal') %>%
+		layer_dense(units = 128, activation = 'relu', kernel_initializer = 'he_normal') %>%
 		layer_dense(units = c_ACTION_COUNT, activation = 'linear', kernel_initializer = 'he_normal')
 
 	outputAction_target <- layer_multiply(inputs = list(outputState_target, inputActionMask) )
 	
 	## Q_Networkを一時保存しておくTargetNetowrkは、fitで更新しないけど、一応Q_networkと同じ値を入れておく。
 	DQN$TargetNetwork <<- keras_model(list(inputActionMask, inputState), outputAction_target) %>%
-		compile( optimizer = 'adam', loss = 'huber', metrics = c('accuracy') )
+		compile( optimizer = 'adam', loss = 'huber' )
 		
 	control <- list(
 		epsilon = 1.0,
@@ -1835,6 +1839,9 @@ MTG_DQN_Learn <- function (method) {
 	## reward clipping
 	trainReward <- sign(trainReward)
 	
+	## trainActionを2次元配列に変更する。
+	trainAction <- cbind(seq(1,DQN$control$batchSize), trainAction)
+	
 	## Q_NetworkからQ値を取得する。
 	outQ <- DQN$Q_Network %>% predict( list(state = trainState, ActionMask = trainActionMask), batch_size = DQN$control$batchSize )
 
@@ -1877,7 +1884,7 @@ MTG_DQN_getAction <- function(state, ActionMask) {
 		
 		## アクションマスク内のQ値が最大のアクションを返す
 		mask <- ActionMask %>%
-			mutate(Q = outQ[,1]) %>%
+			mutate(Q = outQ[1,]) %>%
 			dplyr::filter(Mask == TRUE)
 		action <- mask$ActionName[which.max(mask$Q)]
 
@@ -1918,7 +1925,10 @@ EfficientConstruction <- function(method, loopCount, iterationCount) {
 	if (method == "GreedyGoblin") {
 		MTG_RL_Init(method)
 	} else if (method == "DQN") {
-		MTG_DQN_Init(method)
+		## 途中から再実行出来るように、無かったら初期化するように変更。
+		if ( !exists("DQN") ) {
+			MTG_DQN_Init(method)
+		}
 	}
 	
 	TotalResult <<- vector(mode = "list", length = iterationCount)
@@ -1979,37 +1989,22 @@ print(filename)
 	return(TRUE)
 }
 
-## Q_Networkの中身を調べるためのコード
-Q_Network <- load_model_hdf5(file="c:/yanagawa/R/data/Q_Network.model")
 
-##w <- keras::get_weights(Q_Network)
+## 途中で保存したDQNを復元するコード
+##load(file="file="c:/yanagawa/R/data/PowerStone.dat"")
 
-## 確認用のDeckのstateとActionMaskを作る。
-Deck <- MTG_Init()
-Deck <- MTG_Draw(Deck, 1, 7)
-Deck <- MTG_Draw(Deck, 2, 7)
-Deck <- MTG_SetLand(Deck, 1)
+##DQN <-list(NULL, NULL, NULL)
+##names(DQN) <- c('Q_Network', 'TargetNetwork', 'control')
 
-phase <- 'M'
-ActionMask <- MTG_ActionMask(Deck, phase)
-currentState <- MTG_DQN_state(Deck, phase)
+##DQN$control <- list(
+##	epsilon = 0.91341,
+##	gamma = 0.9,
+##	batchSize = 32,
+##	count = 8661)
+##)
 
-## MTG_DQN_getAction内のコードを１行ずつ検証する。
-tempMask <- rep(0, length(ActionMask$Mask))
-tempMask[ActionMask$Mask] <- 1
-
-outQ <- Q_Network %>% predict( 
-	list(
-		state = array(currentState, dim = c(1, c_DECK_CARD_COUNT * 2, c_CARD_STATUS_COUNT)), 
-		ActionMask = array(tempMask, dim =c(1, c_ACTION_COUNT))
-	), 
-	batch_size = 1
-)
-> outQ
-           [,1] [,2] [,3] [,4] [,5] [,6] [,7]        [,8]         [,9] [,10] [,11] [,12] [,13]
-[1,] 0.07031677    0    0    0    0    0    0 0.001981257 0.0008113208     0     0     0     0
-     [,14] [,15]        [,16] [,17]
-[1,]     0     0 -0.001168048     0
+##DQN$Q_Network <- load_model_hdf5( file="c:/yanagawa/R/data/Q_Network.model")
+##DQN$TargetNetwork <- load_model_hdf5(file="c:/yanagawa/R/data/TargetNetwork.model")
 
 
 
@@ -2031,6 +2026,8 @@ outQ <- Q_Network %>% predict(
 ##save(TotalResult, file="c:/yanagawa/R/data/TotalResult_EC.dat")
 
 ##load("c:/yanagawa/R/data/TotalResult_EC.dat")
+
+
 
 
 
@@ -2245,6 +2242,4 @@ MTG_DQN_Learn("DQN")
 
 save_model_hdf5(DQN$Q_Network, file="c:/yanagawa/R/data/Q_Network.model")
 save_model_hdf5(DQN$TargetNetwork, file="c:/yanagawa/R/data/TargetNetwork.model")
-
-
 
