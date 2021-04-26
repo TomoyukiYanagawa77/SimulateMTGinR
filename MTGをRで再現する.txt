@@ -121,34 +121,80 @@ MTG_SetDeck <- function(Deck) {
 ## Player:どちらのプレイヤーのライブラリから引くか
 ## CardCount:引くカードの枚数
 ## 2020.12.25 ライブラリの上から引く処理とライブラリの底のカードを引かない処理を追加
+## 2021.04.21 ライブラリから１枚選ぶ処理を変更
 MTG_Draw <- function(Deck, Player, CardCount) {
 	## 引数のエラー処理
 	if (Player < 1 & Player > 2) { stop("プレイヤの指定が正しくありません") }
 	if (CardCount < 1 & CardCount > c_DECK_CARD_COUNT) { stop("引くカード枚数の指定が正しくありません") }
 
 	drawCard = 0
+	
 	## DeckOnTopにカードがあったらそこから引く
 	tempList <- DeckOnTop[[Player]]
 	if (length(tempList) > 0) {
-		while (drawCard < CardCount && length(tempList) > 0) {
+		while (drawCard < CardCount & length(tempList) > 0) {
 			tempRow = tempList[ length(tempList) ]
-			Deck$Status[tempRow] <- c_CARD_STATUS_HAND
+			Deck[Deck$DeckRow == tempRow,]$Status <- c_CARD_STATUS_HAND
 			tempList[ length(tempList) ] <- NULL
 			drawCard <- drawCard + 1
 		}
-		DeckOnTop[[Player]] <<- tempList
-	}
-	
-	## ライブラリからランダムに１枚選ぶ
-	while (drawCard < CardCount) {
-		## お試しロジックなので、おバカコード
-		n = as.integer(runif(1, min = 1, max = (c_DECK_CARD_COUNT + 1)) )
-		if (Player == 2) { n = n + c_DECK_CARD_COUNT }
-		if (Deck$Status[n] == c_CARD_STATUS_LIBRARY & MTG_CheckCardLibraryBottom(Player, n) == 0) { 
-			Deck$Status[n] <- c_CARD_STATUS_HAND
-			drawCard = drawCard + 1
+		if (length(tempList) > 0 ) {
+			DeckOnTop[[Player]] <<- tempList
+		} else {
+			DeckOnTop[[Player]] <<- list()
 		}
 	}
+	
+	Library <- Deck %>% filter(PlayerId == Player & Status == c_CARD_STATUS_LIBRARY)
+	tempList <- DeckOnBottom[[Player]]
+	
+	if (length(tempList) == 0 ) {
+		## DeckOnBottomにカードがないならライブラリからランダムに１枚選ぶ
+		while (drawCard < CardCount) {
+			n = as.integer(runif(1, min = 1, max = (nrow(Library) + 1)) )
+			Deck$Status[Library$DeckRow[n]] <- c_CARD_STATUS_HAND
+			drawCard = drawCard + 1
+			if (nrow(Library) > 1) {
+				Library <- subset(Library, DeckRow != Library$DeckRow[n])
+			} else {
+				Library <- NULL
+			}
+		}
+	} else {
+		## DeckOnBottomにカードがあるならライブラリから選んだカードがDeckOnBottomに無いことを確認する。
+		while (drawCard < CardCount) {
+			if ( nrow(Library) > length(tempList) ) {
+				n = as.integer(runif(1, min = 1, max = (nrow(Library) + 1)) )
+				if (MTG_CheckCardLibraryBottom(Player, Library$DeckRow[n]) == 0 ) {
+					Deck$Status[Library$DeckRow[n]] <- c_CARD_STATUS_HAND
+					drawCard = drawCard + 1
+					if (nrow(Library) > 1) {
+						Library <- subset(Library, DeckRow != Library$DeckRow[n])
+					} else {
+						Library <- NULL
+					}
+				}
+			} else {
+				## ライブラリに残ったカード枚数がライブラリの底にあるカード枚数と等しいときは、ライブラリの底からカードを引く
+				tempRow = tempList[1]
+				Deck[Deck$DeckRow == tempRow,]$Status <- c_CARD_STATUS_HAND
+				tempList[1] <- NULL
+				drawCard <- drawCard + 1
+				if (nrow(Library) > 1) {
+					Library <- subset(Library, DeckRow != Library$DeckRow[n])
+				} else {
+					Library <- NULL
+				}
+			}
+		}
+		if ( length(tempList) > 0 ) {
+			DeckOnBottom[[Player]] <<- tempList
+		} else {
+			DeckOnBottom[[Player]] <<- list()
+		}
+
+	}
+
 	return(Deck)
 }
 
@@ -668,7 +714,7 @@ MTG_CheckCardLibraryBottom <- function(Player, DeckRow, flgIsRemoveCard = FALSE)
 }
 
 ## DeckRowのカードをライブラリの上に乗せる。
-MTG_SetCardLibraryTop <- function(Deck, Player, DeckRow) {
+DeckMTG_SetCardLibraryTop <- function(Deck, Player, DeckRow) {
 	## 引数のエラー処理
 	if (Player < 1 & Player > 2) { stop("プレイヤの指定が正しくありません") }
 	if (Player == 1 & ( DeckRow < 1 | DeckRow > c_DECK_CARD_COUNT) ) { stop("カードの指定が正しくありません") }
@@ -1798,7 +1844,7 @@ MTG_DQN_Init <- function(method) {
 		
 	control <- list(
 		epsilon = 1.0,
-		gamma = 0.9,
+		gamma = 0.99,
 		batchSize = 32,
 		count = 1
 	)
@@ -1825,6 +1871,8 @@ MTG_DQN_Learn <- function (method) {
 	if (DQN$control$count %% 1000 == 0) {
 		## Q_NetworkをTargetNetworkにコピー
 		keras::set_weights( DQN$TargetNetwork,  keras::get_weights(DQN$Q_Network))
+
+print("copy Q_Network -> TargetNetwork")
 	}
 	
 	## 学習データからMiniBatch分のデータを取得。
@@ -1855,7 +1903,7 @@ MTG_DQN_Learn <- function (method) {
 	outQ[trainAction] <- trainReward + (MaxQ * DQN$control$gamma)
 
 	## Q_Networkを更新（学習）する
-	DQN$Q_Network %>% fit(list(state = trainState, ActionMask = trainActionMask), outQ, epoch = 1, batch_size = DQN$control$batchSize)
+	DQN$Q_Network %>% fit(list(state = trainState, ActionMask = trainActionMask), outQ, epoch = 1, batch_size = DQN$control$batchSize, verbose = 0)
 	
 	DQN$control$count <<- DQN$control$count + 1
 
@@ -1888,7 +1936,7 @@ MTG_DQN_getAction <- function(state, ActionMask) {
 			dplyr::filter(Mask == TRUE)
 		action <- mask$ActionName[which.max(mask$Q)]
 
-cat(str_c("predict Action:", action, "\n") )
+##cat(str_c("predict Action:", action, "\n") )
 
 		if ( is.null(action) | is.na(action) ) { stop("正しいアクションが選択されませんでした。") }
 	} else {
@@ -1903,7 +1951,7 @@ cat(str_c("predict Action:", action, "\n") )
 
 			## 段々とイプシロンを小さくしていく。
 			epsilon <- DQN$control$epsilon
-			epsilon <- epsilon - 0.00001
+			epsilon <- epsilon - 0.0001
 			if (epsilon < 0.01) {
 				epsilon <- 0.01
 			}
@@ -1951,10 +1999,10 @@ EfficientConstruction <- function(method, loopCount, iterationCount) {
 			if ( exists("PowerStone") ) {
 				PSLength <- length(PowerStone)
 				if (PSLength >= 100000) {
-					PowerStone_back <- PowerStone[[1:20000]]
-					PowerStone <<- PowerStone[[20001:PSLength]]
+					PowerStone_back <- PowerStone[1:20000]
+					PowerStone <<- PowerStone[20001:PSLength]
 					filename <- str_c(workDir, "data/PowerStone_back_", PSLength, ".dat")
-					save(PowerStone_back, filename)
+					save(PowerStone_back, file = filename)
 print(filename)
 				}
 			}
@@ -1968,12 +2016,12 @@ print(filename)
 		cat( sum(TotalResult[[i]]$WinPlayer == 1) )
 		cat("\n")
 	
-		if (i > 1) {
-			## 前回の勝利数を下回っていたら、中断
-			if (sum(TotalResult[[i]]$WinPlayer == 1) < sum(TotalResult[[i-1]]$WinPlayer == 1) ) {
-				break()
-			}
-		}
+##		if (i > 1) {
+##			## 前回の勝利数を下回っていたら、中断
+##			if (sum(TotalResult[[i]]$WinPlayer == 1) < sum(TotalResult[[i-1]]$WinPlayer == 1) ) {
+##				break()
+##			}
+##		}
 		
 		if (method == "GreedyGoblin") {
 			## ReinforceLearninパッケージで、Q学習を行う。
@@ -1991,20 +2039,20 @@ print(filename)
 
 
 ## 途中で保存したDQNを復元するコード
-##load(file="file="c:/yanagawa/R/data/PowerStone.dat"")
+##load(file="c:/yanagawa/R/data/PowerStone20210409.dat")
 
 ##DQN <-list(NULL, NULL, NULL)
 ##names(DQN) <- c('Q_Network', 'TargetNetwork', 'control')
 
 ##DQN$control <- list(
-##	epsilon = 0.91341,
-##	gamma = 0.9,
+##	epsilon = 0.1859,
+##	gamma = 0.99,
 ##	batchSize = 32,
-##	count = 8661)
+##	count = 91654
 ##)
 
-##DQN$Q_Network <- load_model_hdf5( file="c:/yanagawa/R/data/Q_Network.model")
-##DQN$TargetNetwork <- load_model_hdf5(file="c:/yanagawa/R/data/TargetNetwork.model")
+##DQN$Q_Network <- load_model_hdf5( file="c:/yanagawa/R/data/Q_Network20210409.model")
+##DQN$TargetNetwork <- load_model_hdf5(file="c:/yanagawa/R/data/TargetNetwork20210409.model")
 
 
 
@@ -2026,8 +2074,6 @@ print(filename)
 ##save(TotalResult, file="c:/yanagawa/R/data/TotalResult_EC.dat")
 
 ##load("c:/yanagawa/R/data/TotalResult_EC.dat")
-
-
 
 
 
@@ -2125,8 +2171,6 @@ TotalResult %>% filter(WinPlayer == 2)
 MentalNote(603, TRUE)
 
 
-
-
 ## SetCardLibraryTop Test
 ## テスト用コード
 Deck <- MTG_Init()
@@ -2139,6 +2183,31 @@ Deck <- MTG_SetCardLibraryTop(Deck, 1, 31)
 MTG_Hand(Deck, 1, TRUE)
 
 DeckOnTop
+
+## MTG_Draw with MTG_SetCardLibraryOnTop & MTG_SetCardLibraryOnBottom Test
+set.seed(1)
+Deck <- MTG_Init()
+Deck <- MTG_Draw(Deck, 1, 7)
+MTG_Hand(Deck, 1, TRUE)
+
+filter(Deck, PlayerId == 1 & Status == c_CARD_STATUS_LIBRARY )
+
+Deck <- MTG_SetCardLibraryTop(Deck, 1, 1)
+Deck <- MTG_SetCardLibraryTop(Deck, 1, 2)
+Deck <- MTG_SetCardLibraryTop(Deck, 1, 5)
+
+Deck <- MTG_SetCardLibraryBottom(Deck, 1, 12)
+Deck <- MTG_SetCardLibraryBottom(Deck, 1, 11)
+Deck <- MTG_SetCardLibraryBottom(Deck, 1, 6)
+
+Deck[Deck$Status == c_CARD_STATUS_HAND,]$Status <- c_CARD_STATUS_GRAVEYARD
+
+Deck <- MTG_Draw(Deck, 1, 7)
+MTG_Hand(Deck, 1, TRUE)
+
+Deck <- MTG_Draw(Deck, 1, 1)
+MTG_Hand(Deck, 1, TRUE)
+
 
 
 ## Mulligan Test
@@ -2239,7 +2308,5 @@ options(warn =2)
 MTG_DQN_Learn("DQN")
 
 
-
 save_model_hdf5(DQN$Q_Network, file="c:/yanagawa/R/data/Q_Network.model")
 save_model_hdf5(DQN$TargetNetwork, file="c:/yanagawa/R/data/TargetNetwork.model")
-
